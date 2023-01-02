@@ -1,0 +1,1288 @@
+---
+title: "Supervised Machine Learning Project -- Wine Quality"
+author: "Safiya Alavi and Maya Sinha"
+date: "2022-12-10"
+output: 
+  html_document:
+    highlight: pygments
+    theme: cosmo
+    toc: yes
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(tidyverse)
+library(tidymodels)
+library(corrplot)
+library(ggthemes)
+library(klaR) # for naive bayes
+library(discrim)
+library(glmnet)
+library(rpart)
+library(randomForest)
+library(xgboost)
+library(ranger)
+library(vip)
+library(lubridate)
+library(dplyr)
+library(ISLR)
+library(rpart.plot)
+library(janitor)
+library(RColorBrewer)
+library(ggpubr)
+
+tidymodels_prefer()
+```
+
+## **Overview of Data Sets**
+
+We are analyzing the quality of wine based on 11 predictors: fixed acidity, volatile acidity, citric acid, residual sugar, chlorides, free sulfur dioxide, total sulfur dioxide, density, pH, sulfates, alcohol. Quality, in this instance, is defined as an indicator of its craftsmanship and, thus, desirability which can be used, for example, in pricing. Quality does not necessarily indicate if a wine has gone bad. We will use two data sets -- one for white wine and the other for red -- to create two respective machine learning models. There are 4899 observations in the white wine data set and 1600 observations in the red wine data set.
+
+<br>
+
+## **Overview of Research Questions**
+
+We are interested in conducting analysis on both the white and red wine to assess the quality of wine in new wines in production so that they may be accurately priced and marketed. Maya works at a natural wine bar in downtown Santa Barbara and is familiar with the components of wine that have to do with taste, influence of location, and food pairing, but less familiar with chemical composition of a quality wine. She is specifically interested in how certain chemical levels can influence the quality and desireability of a wine, incorporating this knowledge in how to sell wine to her customers. 
+
+<br>
+
+## **Loading Data**
+
+This project uses data on the white and red wine, which records information of the chemical makeup of the wine.
+
+```{r load data, message = FALSE, class.source = 'fold-show'}
+white_og <- read.csv("wine_dataset/winequality-white.csv", sep = ";")
+red_og <- read.csv("wine_dataset/winequality-red.csv", sep = ";")
+```
+
+<br>
+
+## **Data Cleaning**
+
+To clean our data, we clean the column names, change quality into a factor so we can analyze it with classification models, and add a `type` of `White` or `Red` to each data set. We removed any rows in the white wine data set with a quality value of 9 because there are too few instances, and thus, it inhibits our models from performing correctly later on. The red wine data set did not have any quality values of 9. We also create a combined data frame with both values from white and red wine to see if there are significant differences between red and white evaluations for quality.
+
+```{r data cleaning, class.source = 'fold-show', echo=TRUE, results = 'hide'}
+# Make Column Names Clean 
+white_og %>% clean_names()
+red_og %>% clean_names()
+
+#take out data with quality = 9; red does not have any values of 9
+white <- white_og[white_og$quality < 9,]
+red <- red_og[red_og$quality < 9,]
+
+# Change quality to factor
+white$quality <- factor(white$quality, levels = c(3,4,5,6,7,8))
+red$quality <- factor(red$quality, levels = c(3,4,5,6,7,8))
+
+# Adding type
+white$type <- "White"
+red$type <- "Red"
+
+# data frame of combined wine
+combinedWine_og <- rbind(white_og, red_og)
+combinedWine <- rbind(white, red)
+```
+
+## **Data Split**
+
+In our data split, we put a proportion of .7 of each original data set into a training data set and a proportion of .3 into the testing data sets, stratifying by quality. In this section, we also folded our data into 5 folds for later cross validation use.
+
+```{r data split, message = FALSE, class.source = 'fold-show'}
+set.seed(1234)
+white_split <- white %>% 
+  initial_split(prop = 0.7, strata = "quality")
+
+white_train <- training(white_split)
+white_test <- testing(white_split)
+
+red_split <- red %>% 
+  initial_split(prop = 0.7, strata = "quality")
+
+red_train <- training(red_split)
+red_test <- testing(red_split)
+
+white_fold <- vfold_cv(white_train, v = 5)
+red_fold <- vfold_cv(red_train, v = 5)
+```
+
+## **Exploratory Data Analysis**
+
+What sort of factors do winemakers and sommeliers look for in a quality wine? Generally, quality is determined by acidity, dryness, flavor profile or taste, alcohol content, and how well the wine is preserved or how it changes as it is stored. In our exploratory data analysis, we will analyze our predictors based on these five categories. First, acidity levels can be summarized through the `ph` levels, `fixed.acidity`, `volatile.acidity`, and `citric.acid` content. Dryness is determined by the `density`. Taste can be broken down into sweetness and saltiness, which are caused by `residual.sugar` and `chlorides` respectively. We will analyze `alcohol` content singularly to see its effect on the wine quality. Lastly, sulfurous compounds are what is generally used to preserve wine, so we will analyze `free.sulfur.dioxide`, `total.sulfur.dioxide`, and `sulphates` to see if the way a wine is preserved interacts with wine quality in an interesting way.
+
+Our data can be split into two data sets because experts look for different levels of acidity, sugar, etc. for white wine and red wine. Thus, we will have 3 different representations of the data: one for white wine, one for red wine, and one for both.
+
+All of our predictors are continuous, so we will use box plots, histograms, and scatter plots to visualize our data and determine feature selection.
+
+First, let's see the distribution of quality between both data sets of wine.
+
+```{r combined quality histogram}
+ggplot(combinedWine_og, aes(quality)) + geom_bar(color = "black", fill = "pink") + labs(title = "Histogram of Quality - Total Wine") + xlab("Quality of Wine") + ylab("Count") 
+```
+
+We can see that it is normally distributed, meaning that most wine has a quality value of 5 or 6, with few exceptionally good wines having a value of 8 or 9, and low quality wines having a quality value of 3. Based on their low frequency, we can further justify selecting against of quality values of 9 in our initial data cleaning.
+
+Next, we look at the correlation matrices for white and red wine separately to determine which predictors are correlated.
+
+### **Correlation Matrices** {.tabset}
+
+#### **White**
+
+```{r white correlation matrix}
+white %>% 
+  select(where(is.numeric)) %>% 
+  cor() %>% 
+  corrplot(type = 'lower', diag = FALSE, 
+           method = 'color', mar=c(0,0,2,0), main = 'White Wine Correlation Plot')
+```
+
+In the white wine correlation matrix, density and residual sugar; and density and alcohol are the predictors with the highest correlation. Total sulfur dioxide and free sulfur dioxide also have a moderate correlation.
+
+#### **Red**
+
+```{r red correlation matrix}
+
+red %>% 
+  select(where(is.numeric)) %>% 
+  cor() %>% 
+  corrplot(type = 'lower', diag = FALSE, 
+           method = 'color', mar=c(0,0,2,0), main = 'Red Wine Correlation Plot')
+```
+
+In the red wine correlation matrix, citric acid and fixed acidity; density and fixed acidity; citric acid and volatile acidity; pH and fixed acidity; and free sulfur dioxide and total sulfur dioxide are highly correlated with each other.
+
+<br> <br>
+
+### **Scatter plots** {.tabset}
+
+To visualize and validate these correlations, let's take a look at the scaled scatter plot of each predictor plotted against its correlated counterpart.
+
+#### **White**
+
+```{r white wine scatter plots, message=FALSE, warning = FALSE}
+
+# scaled data sets 
+scaled_white = as.data.frame(scale(select(white, c(-quality,-type))))
+scaled_red = as.data.frame(scale(select(red, c(-quality,-type))))
+
+# scaled white residual sugar versus density 
+ggplot(scaled_white, aes(x = residual.sugar, y = density)) + geom_point()+scale_x_continuous(name = "Residual Sugar") + scale_y_continuous(name = "Density") + geom_smooth(method = "lm", se = FALSE)+ ggtitle(" Residual Sugar Versus Density") + theme(plot.title = element_text(size = 20))
+
+# scaled white alcohol versus density 
+ggplot(scaled_white, aes(x = alcohol, y = density)) + geom_point()+scale_x_continuous(name = "Alcohol") + scale_y_continuous(name = "Density") + geom_smooth(method = "lm", se = FALSE)+ ggtitle("Alcohol Versus Density") + theme(plot.title = element_text(size = 20))
+
+# scaled white free sulfur dioxide versus total sulfur dioxide
+ggplot(scaled_white, aes(x = free.sulfur.dioxide, y = total.sulfur.dioxide)) + geom_point()+scale_x_continuous(name = "Free Sulfur Dioxide") + scale_y_continuous(name = "Total Sulfur Dioxide") + geom_smooth(method = "lm", se = FALSE)+ ggtitle("Free Sulfur Versus Total Sulfur Dioxide") + theme(plot.title = element_text(size = 20))
+```
+
+#### **Red**
+
+```{r red wine scatter plots, message= FALSE, warning = FALSE}
+# scaled red volatile acidity versus citric acid
+ggplot(scaled_red, aes(x = volatile.acidity, y = citric.acid)) + geom_point()+scale_x_continuous(name = "Volatile Acidity") + scale_y_continuous(name = "Citric Acid") + geom_smooth(method = "lm", se = FALSE)+ ggtitle("Volatile Acidity Versus Citric Acid") + theme(plot.title = element_text(size = 20))
+
+# scaled red fixed acidity versus citric acid 
+ggplot(scaled_red, aes(x = fixed.acidity, y = citric.acid)) + geom_point()+scale_x_continuous(name = "Fixed Acidity") + scale_y_continuous(name = "Citric Acid") + geom_smooth(method = "lm", se = FALSE)+ ggtitle("Fixed Acidity Versus Citric Acid") + theme(plot.title = element_text(size = 20))
+
+# scaled red fixed acidity versus pH
+ggplot(scaled_red, aes(x = fixed.acidity, y = pH)) + geom_point()+scale_x_continuous(name = "Fixed Acidity") + scale_y_continuous(name = "pH") + geom_smooth(method = "lm", se = FALSE)+ ggtitle("Fixed Acidity Versus pH") + theme(plot.title = element_text(size = 20))
+
+# scaled red fixed acidity versus density
+ggplot(scaled_red, aes(x = fixed.acidity, y = density)) + geom_point()+scale_x_continuous(name = "Fixed Acidity") + scale_y_continuous(name = "Density") + geom_smooth(method = "lm", se = FALSE)+ ggtitle("Fixed Acidity Versus Density") + theme(plot.title = element_text(size = 20))
+
+# scaled red free sulfur dioxide versus total sulfur dioxide
+ggplot(scaled_red, aes(x = free.sulfur.dioxide, y = total.sulfur.dioxide)) + geom_point()+scale_x_continuous(name = "Free Sulfur Dioxide") + scale_y_continuous(name = "Total Sulfur Dioxide") + geom_smooth(method = "lm", se = FALSE)+ ggtitle("Free Sulfur Dioxide Versus Total Sulfur Dioxide") + theme(plot.title = element_text(size = 20))
+```
+
+### {-}
+
+Based on the scatter plots, we can visualize the correlations between the predictors. For example, for white wine, density has a strong positive correlation with residual sugar and a moderate negative correlation with alcohol. Through these scatter plots, we confirm the existence of correlations predicted by our initial correlation matrix.
+
+Now, we can take a look at the box plots for several of our predictors to see the ways that they interact with wine quality, isolated from the other predictors. First, we will visualize acidity levels which can be measured through fixed acidity, volatile acidity, and citric acid levels. As shown above in the scatter plots, these three predictors are highly correlated with each other in red wine.
+
+```{r eda boxplot of fixed acidity, volatile acidity, and citric acid versus quality, message = FALSE}
+
+#fixed acidity
+ggplot(combinedWine, mapping = aes(x = `fixed.acidity`, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = alcohol, y = quality)) + labs(title = "Red and White Fixed Acidity Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd") + facet_wrap(. ~ type, nrow = 1) +coord_cartesian( xlim = c(0,16), ylim = NULL, default = FALSE )
+
+# volatile acidity 
+ggplot(combinedWine, mapping = aes(x = `volatile.acidity`, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = alcohol, y = quality)) + labs(title = "Red and White Volatile Acidity Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd") + facet_wrap(. ~ type, nrow = 1) + coord_cartesian( xlim = c(0,1), ylim = NULL, default = FALSE )
+
+# citric acid 
+ggplot(combinedWine, mapping = aes(x = `citric.acid`, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = alcohol, y = quality)) + labs(title = "Red and White Citric Acid Levels Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd") + facet_wrap(. ~ type, nrow = 1)+ coord_cartesian( xlim = c(0,1), ylim = NULL, default = FALSE )
+
+```
+
+From these box plots, we can see that fixed acidity levels are relatively consistent in both red and white wine. Volatile acidity has a negative correlation with quality in red wine, but relatively consistent averages for each level of wine quality in white wine. Citric acid levels in red wine have a stronger positive correlation than in white wine. In general, we can see that acidity levels fluctuate more in red wine than in white wine.
+
+Next, let's take a look at dryness which is determined by the predictor density. Based on the correlation matrix and scatter plots, density also is correlated with residual sugar and alcohol in white wine and with fixed acidity in red wine.
+
+```{r eda box plot density, message=FALSE}
+# density
+ggplot(combinedWine, mapping = aes(x = density, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = density, y = quality)) + labs(title = "Red and White Density Levels versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd") + facet_wrap(. ~ type, nrow = 1)+ coord_cartesian( xlim = c(.985,1.01), ylim = NULL, default = FALSE )
+```
+
+Although density is correlated with several predictors according to the correlation matrices and scatter plots, in this box plot, we can see that density stays relatively consistent, around 1, for each level of wine quality.
+
+Next, we will look at the taste of the wine, which is determined by levels of sweetness and saltiness. These are affected by sugar levels and chlorides respectively.
+
+```{r eda box plot taste, message=FALSE, warning=FALSE}
+#sugar content
+ggplot(combinedWine, mapping = aes(x = residual.sugar, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = residual.sugar, y = quality)) + labs(title = "Red and White Residual Sugar Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd") + facet_wrap(. ~ type, nrow = 1) + coord_cartesian( xlim = c(0,25), ylim = NULL, default = FALSE )
+
+# we removed outliers to ensure that the variation was not due to the outliers 
+ggplot(red[red$free.sulfur.dioxide < 50,], aes(x = free.sulfur.dioxide, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  labs(title = "Free Sulfur Dioxide for Red Wine", x = "Free Sulfur Dioxide", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "RdPu")
+
+#chlorides
+ggplot(combinedWine, mapping = aes(x = chlorides, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = chlorides, y = quality)) + labs(title = "Red and White Chloride Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd") + facet_wrap(. ~ type, nrow = 1) + coord_cartesian( xlim = c(0,0.3), ylim = NULL, default = FALSE )
+```
+
+White wine has, on average, higher and more variable sugar levels than red wine while red wine has an on average higher chloride content than white wine. There seem to be a higher number of outliers in the values of chloride.
+
+Next, we will analyze alcohol content, which can affect the taste of the wine as well.
+
+```{r eda box plot alcohol, message=FALSE}
+ggplot(combinedWine, mapping = aes(x = alcohol, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = alcohol, y = quality)) + labs(title = "Red and White Alcohol Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd") + facet_wrap(. ~ type, nrow = 1) 
+```
+
+There is generally higher alcohol content associated with a wine of higher quality but there is not a significant different in averages between red wine and white wine.
+
+Lastly, let's look at the preservative content, which is determined by free sulfur dioxide, total sulfur dioxide, and sulfates.
+
+```{r eda box plot preservatives, message=FALSE}
+#free sulfur dioxide
+ggplot(combinedWine, mapping = aes(x = free.sulfur.dioxide, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = free.sulfur.dioxide, y = quality)) + labs(title = "Red and White Free Sulfur Dioxide Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd") + facet_wrap(. ~ type, nrow = 1) + coord_cartesian( xlim = c(0,150), ylim = NULL, default = FALSE )
+
+#total sulfur dioxide
+ggplot(combinedWine, mapping = aes(x = total.sulfur.dioxide, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = total.sulfur.dioxide, y = quality)) + labs(title = "Red and White Total Sulfur Dioxide Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd") + facet_wrap(. ~ type, nrow = 1) + coord_cartesian( xlim = c(0,300), ylim = NULL, default = FALSE )
+
+#sulfates
+ggplot(combinedWine, mapping = aes(x = sulphates, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = sulphates, y = quality)) + labs(title = "Red and White Sulfate Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd") + facet_wrap(. ~ type, nrow = 1) + coord_cartesian( xlim = c(0,1.5), ylim = NULL, default = FALSE )
+
+```
+
+From the box plots we can see that red wine generally has a lower sulfur dioxide content than white wine. Also, averages across each stratification of quality have similar values except for sulfates in red wine, which have a slight positive correlation with quality.
+
+In general, data scientists conduct exploratory data analysis to see how predictor variables interact with the response and with each other before we make any assumptions. Based on the EDA that we conducted, we will keep all of our predictor variables in our recipes and will not interact any terms. <br>
+
+## **Loading in Saved Models**
+
+We did all of our modeling in R-Scripts for efficiency purposes, since models generally take a long time to run. We will load all of results here, and intermittently call variables throughout the report to visualize our calculations.
+
+```{r loading in model outputs, class.source = 'fold-show'}
+# LDA 
+load("rda_objects/WhiteLDA.rda")
+load("rda_objects/RedLDA.rda")
+
+# LDA with PCA
+load("rda_objects/WhiteLDAPCA.rda")
+load("rda_objects/RedLDAPCA.rda")
+
+# Decision Tree
+load("rda_objects/WhiteWineDecisionTree.rda")
+load("rda_objects/RedWineDecisionTree.rda")
+
+# Random Forest 
+load("rda_objects/WhiteWineRandomForest.rda")
+load("rda_objects/RedWineRandomForest.rda")
+
+# Boosted Trees
+load("rda_objects/WhiteWineBoostedTrees.rda")
+load("rda_objects/RedWineBoostedTrees.rda")
+```
+
+## **Model Fitting for White Wine**
+
+We will be fitting linear discriminant analysis, naive Bayes, single decision tree, random forest, and boosted tree models and compare accuracy metrics. Then, we will fit the three models with the best `roc_auc` to our testing data. First, let's see how the models perform on the white wine data set.
+
+### **Recipe**
+
+In our recipe for the white wine data set, we selected for all the predictors, converted character or factored data into numeric binary data, and normalized all predictors.
+
+```{r white recipe, message=FALSE, class.source = 'fold-show'}
+white_recipe <- recipe(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = white_train) %>% step_dummy(all_nominal_predictors()) %>% step_normalize(all_predictors())
+```
+
+### **K-Fold Cross Validation**
+
+Let's first explore linear discriminant analysis and naive Bayes classification through k-fold cross validation.
+
+#### **Linear Discriminant Analysis**
+
+For the linear discriminant analysis model, we use a classification mode and set the engine to `MASS`. We then add the model and recipe to a workflow and create a fit between the workflow and folded data. We are using `roc_auc` to evaluate accuracy.
+
+```{r white k-fold lda, message=FALSE, class.source = 'fold-show'}
+#set up model with mode classification and engine MASS
+wlda_model <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS") 
+
+#add model and recipe to the workflow
+wlda_wkflow<- workflow() %>% 
+  add_model(wlda_model) %>% 
+  add_recipe(white_recipe)
+
+#create a fit between the workflow and folded data
+wlda_fit_cross <- fit_resamples(wlda_wkflow, white_fold)
+
+#determine the roc_auc of the LDA model on the folded training data
+collect_metrics(wlda_fit_cross)
+```
+
+<br>
+
+#### **Naive Bayes**
+
+Now, let's take a look at how our cross validation method works with a Naive Bayes model. In particular, let's see if the accuracy increases.
+
+```{r white k-fold Naive Bayes, message = FALSE, class.source = 'fold-show'}
+#set up model with mode classification and engine kLaR
+#we used set_args(use_kernel = FALSE) based on Lab 3
+wnb_mod <- naive_Bayes() %>% 
+  set_mode("classification") %>% 
+  set_engine("klaR") %>% 
+  set_args(usekernel = FALSE) 
+
+#add model and recipe to the workflow
+wnb_wkflow <- workflow() %>% 
+  add_model(wnb_mod) %>% 
+  add_recipe(white_recipe)
+
+#create a fit between the workflow and folded data
+wnb_fit_cross <- fit_resamples(wnb_wkflow, white_fold)
+
+#determine the roc_auc of the Naive Bayes model on the folded training data
+collect_metrics(wnb_fit_cross)
+```
+
+Through k-fold cross validation, we can see that the linear discriminant analysis model produces better accuracy than the Naive Bayes model comparing the accuracy metrics of .52 to .45 respectively.
+
+To account for the collinearity between some of our predictors, which we saw in the exploratory data analysis, we will conduct principal component analysis on the data. Since our linear discriminant analysis model was better on the white wine data set, we will use the principal components on an LDA model.
+
+### **Principal Component Analysis**
+
+To conduct principal component analysis, we will begin by setting up another recipe specifically for this purpose. With this, we conduct an LDA workflow and model fit. We are tuning the model to find the best number of principal components using k-fold cross validation.
+
+```{r white pca lda set up, class.source = 'fold-show', eval = FALSE}
+white_recipe_pca <- recipe(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = white_train) %>% step_dummy(all_nominal_predictors()) %>% step_normalize(all_predictors()) %>% step_pca(all_numeric_predictors(), num_comp = tune())
+
+# column name(s) must match tune() above
+tuneGrid <- expand.grid(num_comp = 1:ncol(white_recipe_pca$template))
+
+# control tune_grid() process below
+trControl <- control_grid(verbose = TRUE, allow_par = FALSE)
+
+wlda_pca_wkflow <- workflow() %>% 
+  add_model(wlda_model) %>% 
+  add_recipe(white_recipe_pca)
+
+pca_lda_fit <- wlda_pca_wkflow %>%
+  tune_grid(resamples = white_fold,
+            grid = tuneGrid,
+            metrics = metric_set(accuracy),
+            control = trControl)
+```
+
+<br>
+
+This visualization represents the number of principal components versus the accuracy of the model. We can observe an obvious spike in accuracy at 9 principal components.
+
+```{r white pca lda fit}
+pca_lda_metrics <- pca_lda_fit %>% collect_metrics()
+
+ggplot(pca_lda_metrics, aes(x = num_comp, y = mean)) +
+  geom_line(color = "#3E4A89FF", linewidth = 2, alpha = 0.6) +
+  scale_x_continuous(breaks = 1:ncol(white_recipe_pca$template)) +
+  facet_wrap(~.metric) +
+  theme_bw()
+```
+
+```{r white pca lda2, include = FALSE, eval = FALSE}
+pca_lda_fit %>% show_best(metric = "accuracy")
+
+(bestTune <- pca_lda_fit %>% select_by_one_std_err(num_comp, metric = "accuracy"))
+
+wlda_pca_wkflow_final <- wlda_pca_wkflow %>% finalize_workflow(bestTune)
+
+fit_final <- wlda_pca_wkflow_final %>% fit(white_train)
+
+white.PCALDA <- tibble(white_train,
+       predict(fit_final, new_data = white_train, type = "class"), # predicted class
+       predict(fit_final, new_data = white_train, type = "prob"), # posterior prob. for classes
+       as_tibble(predict(fit_final, new_data = white_train, type = "raw")$x)) # LD scores
+```
+
+<br>
+
+This is a visualization of the actual quality and the predicted qualities. We are only displaying about half of the data, so the plot is easier to interpret. The plot displays the clustering of the data very well for each quality level. In addition, we can visually see how well the model predicts the qualities accurately, and around how often/how greatly the model fails.
+
+```{r white pca lda plot}
+# plot
+ggplot(white.PCALDA[1:1500,], aes(x = LD1, y = LD2)) +
+  geom_point(aes(color = quality, shape = .pred_class)) + 
+  theme_bw() +
+  ggtitle("PCA-LDA (DAPC) on White Wine Training dataset, using 9 PC")
+```
+
+```{r white pca lda final fit, eval = FALSE, include = FALSE}
+#augmented on training 
+pcalda_fit <- augment(fit_final, new_data = white_train) 
+pcalda_acc <- pcalda_fit %>% accuracy(truth = quality, estimate = .pred_class)
+pcalda_rocauc <- pcalda_fit %>% roc_auc(truth = quality, estimate = .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White Wine LDA Model using PCA ")
+pcalda_roccurve <- pcalda_fit %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+pcalda_confusionmatrix <- pcalda_fit %>%
+  conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+
+<br>
+
+```{r white pca lda final visual}
+pcalda_acc
+pcalda_rocauc
+pcalda_roccurve
+pcalda_confusionmatrix
+```
+
+These metrics and graphs reveal how accurately the principal component analysis works on the training data with a linear discriminant analysis model. The `roc_auc` curves are the best for qualities 4 and 8, although overall PCA LDA is not the most effective as the accuracy is merely 53%. Through the confusion matrix, we can see the model predicted `6`s well.
+
+<br>
+
+### **Single Decision Tree**
+
+Since a value of about 53% is only moderately accurate, we will try several tree methods to see if the produce more accurate results on the training data set of white wine. First, we will look at the model for a single decision tree.
+
+First, we set up a specification with the engine `rpart` and for classification.
+
+```{r white decision tree spec, message=FALSE, class.source = 'fold-show', eval=FALSE}
+# decision tree specification
+wtree_spec <- decision_tree() %>%
+  set_engine("rpart")
+
+wtree_spec_class <- wtree_spec %>%
+  set_mode("classification")
+```
+
+<br>
+
+Next, we fit the specification to the training data.
+
+```{r white decision tree fit, message=FALSE, class.source = 'fold-show', eval=FALSE}
+wclass_tree_fit <- wtree_spec_class %>%
+  fit(quality ~ volatile.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = white_train)
+```
+
+<br>
+
+Here is a visual of how the decision tree model works with our data.
+
+```{r white decision tree fit visual, message = FALSE, warning=FALSE}
+wclass_tree_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+
+<br>
+
+Now, we augment the model on the training model and evaluate the accuracy and confusion matrix.
+
+```{r white decision tree augment}
+# augmented on training 
+augment(wclass_tree_fit, new_data = white_train) %>%
+  accuracy(truth = quality, estimate = .pred_class)
+
+augment(wclass_tree_fit, new_data = white_train) %>%
+  conf_mat(truth = quality, estimate = .pred_class)%>% autoplot(type = "heatmap")
+```
+
+<br>
+
+The accuracy is 52% and the confusion matrix shows us that 5 and 6 quality are evaluated the best.
+
+Here, we are tuning our model to determine the best measures for `cost_complexity`.
+
+```{r white decision tree tuning, class.source = 'fold-show', eval=FALSE}
+# tuning cost complexity 
+wclass_tree_wf<- workflow() %>%
+  add_model(wtree_spec_class %>% 
+              set_args(cost_complexity = tune())) %>% 
+  add_formula(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol)
+
+param_grid <- grid_regular(cost_complexity(range = c(-3,-1)), levels = 10)
+
+tune_res_white <- tune_grid(
+  wclass_tree_wf,
+  resamples = white_fold,
+  grid = param_grid,
+  metric = metric_set(accuracy)
+)
+```
+
+<br>
+
+Now we produce a graph of accuracies and `roc_auc` levels for various cost complexity parameters.
+
+```{r white decision tree autoplot visual}
+wAutoPlot
+```
+
+<br>
+
+Here, we can see that accuracy and `roc_auc` are both highest at around .005 value for the cost-complexity parameter.
+
+```{r white decision tree best fit, eval=FALSE}
+# extracting the best cost complexity parameter
+best_complexity <- select_best(tune_res_white)
+wclass_tree_final <- finalize_workflow(wclass_tree_wf, best_complexity)
+wclass_tree_final_fit <- fit(wclass_tree_final, data = white_train)
+```
+
+Using the measure of cost complexity which produces the best accuracy and `roc_auc` levels, this is a visualization of the decision tree that is used in the model. It is very precise and may show signs that it would overfit on testing data.
+
+```{r white decision tree final fit visual, warning=FALSE, message=FALSE}
+wclass_tree_final_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+
+```{r white decision tree final fit code, eval=FALSE}
+# augmented on training 
+wdectree_pred <- augment(wclass_tree_final_fit, new_data = white_train) 
+wdectree_acc <- wdectree_pred %>% accuracy(truth = quality, estimate = .pred_class)
+wdectree_rocauc <- wdectree_pred %>% roc_auc(truth = quality, estimate = .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White Decision Tree Model")
+wdectree_roccurve <- wdectree_pred %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+wdectree_confusionmatrix <- augment(wclass_tree_final_fit, new_data = white_train) %>%
+  conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+
+This is the overall accuracy measures, `roc_auc` measures, `ROC` curves and confusion matrix that is returned my our decision tree model on the white wine data set. The accuracy is similar to the principal component model with linear discriminant analysis that we previously conducted.
+
+```{r white decision tree final code}
+print(wdectree_acc)
+print(wdectree_rocauc)
+wdectree_roccurve
+wdectree_confusionmatrix
+```
+
+From the `ROC` curve, we can see that the decision tree model produces very similar curves for each value of quality, and from the heat map, we can see that the model predicted `5`s and `6`s with the highest accuracy.
+
+### **Random Forest**
+
+In hopes of improving our results, we will now look at the random forest model. Here, we set up our model with the engine `ranger` and set the importance to `impurity` to find a set of predictors that best explains the variance in the response variable, and still with a classification approach.
+
+```{r white random forest, message=FALSE, class.source = 'fold-show', eval=FALSE}
+# setting random forest model up
+wrandfor <- rand_forest() %>% set_engine("ranger", importance = "impurity") %>% set_mode("classification")
+```
+
+<br>
+
+Then, we set up our workflow, tuning `range`, `trees` and `min_n`
+
+```{r white random forest workflow, class.source = 'fold-show', eval=FALSE}
+wrandfor_wf <- workflow() %>%
+  add_model(wrandfor %>%
+              set_args(mtry = tune(), trees = tune(), min_n = tune())) %>% 
+  add_formula(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol)
+```
+
+```{r white random forest grid, eval = FALSE, include=FALSE}
+# tuning the model to find the best arguments 
+param_grid1 <- grid_regular(mtry(range = c(1,9)), trees(range = c(15,17)), min_n(range = c(30,50)), levels = 8)
+
+wtune_res_randfor <- tune_grid(
+  wrandfor_wf,
+  resamples = white_fold,
+  grid = param_grid1,
+  metric = metric_set(accuracy)
+)
+```
+
+This next visualization shows the accuracy and `roc_auc` of the various values we are tuning our model with. For the final recipe, we will extract the metrics that return the best accuracy and `roc_auc`.
+
+```{r white random forest autoplot visual}
+autoplot(wtune_res_randfor)
+```
+
+<br>
+
+Now we will collect accuracy metrics to find the model with the highest mean.
+
+```{r white random forest best fit, eval = FALSE, include = FALSE}
+# collecting metrics to find best mean
+wbest_rocauc1 <- collect_metrics(wtune_res_randfor) %>% arrange(desc(mean))
+wbest_metric1 <- select_best(wtune_res_randfor)
+
+wrandfor_final <- rand_forest(mtry = 2, trees = 17, min_n = 30) %>% set_engine("ranger", importance = "impurity") %>% set_mode("classification")
+wrandfor_fit_final <- fit(wrandfor_final, formula = quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = white_train)
+```
+
+```{r white random forest variance importance plot, eval = FALSE, include = FALSE}
+# variance importance plot
+wVIP <- vip(wrandfor_fit_final)
+
+# extracting the metrics 
+wrandfor_pred <- augment(wrandfor_fit_final, new_data = white_train) 
+wrandfor_acc <- wrandfor_pred %>% accuracy(truth = quality, estimate = .pred_class) %>% mutate(model_type = "White Random Forest Model")
+wrandfor_rocauc <- wrandfor_pred %>% roc_auc(truth = quality, estimate = .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White Random Forest Model")
+wrandfor_roccurve <- wrandfor_pred %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+wrandfor_confusionmatrix <- augment(wrandfor_fit_final, new_data = white_train) %>%
+  conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+
+Here are our final results.
+
+```{r white random forest final code}
+wVIP
+print(wrandfor_acc)
+print(wrandfor_rocauc)
+wrandfor_roccurve
+wrandfor_confusionmatrix
+```
+
+<br>
+
+Overall the random forest for the white wine data set has a drastic improvement in terms of the accuracy and `roc_auc`. The variance importance plot reveals that alcohol, volatile acidity and density are most important variables in the data. Every single `roc_auc` curve is almost perfect, although as we have learned through the course, this model may be over fitting, and as a result, may not perform as well on the testing data set. This model did the best for predicting wine qualities of `5`, `6`, and `7`.
+
+### **Boosted Trees**
+
+Finally, let's look at the boosted tree model. We set up our specifications with engine `xgboost` and with a classification approach.
+
+```{r white boosted tree spec, message=FALSE, eval=FALSE, class.source = 'fold-show'}
+wboost_spec <-  boost_tree(tree_depth = 5) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+```
+
+Then, we set up our workflow, tuning only `trees` this time.
+
+```{r white boosted tree workflow, eval=FALSE, class.source = 'fold-show'}
+wboost_wf <- workflow() %>%
+  add_model(wboost_spec %>%
+              set_args(trees = tune())) %>% 
+  add_formula(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol)
+```
+
+```{r white boosted tree grid, eval = FALSE, include=FALSE}
+param_grid3 <- grid_regular(trees(range = c(10,2000)), levels = 10)
+
+wtune_res_boosted <- tune_grid(
+  wboost_wf,
+  resamples = white_fold,
+  grid = param_grid3
+)
+```
+
+<br>
+
+This plot below visualizes the accuracy and `roc_auc` levels for the number of trees. Since we tune the value for the number of trees, we can choose to use the number of trees which has the highest accuracy and `roc_auc` levels.
+
+```{r white boosted tree autoplot}
+wBoostedAutoPlot
+```
+
+Here, the accuracy and `roc_auc` graphs both spike right before 250 trees.
+
+Now, we collect accuracy metrics to see which model has the highest mean.
+
+```{r white boosted tree best fit, eval=FALSE, class.source = 'fold-show'}
+wbest_rocauc2 <- collect_metrics(wtune_res_boosted) %>% arrange(desc(mean))
+wbest_metric2 <- select_best(wtune_res_boosted)
+print(wbest_metric2)
+
+wboost_final <- boost_tree(tree_depth = 5, trees = 231)%>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+
+wboost_fit_final <- fit(wboost_final, formula = quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = white_train)
+```
+
+```{r white boosted tree augment, eval = FALSE, include=FALSE}
+# augmenting 
+wpredicted <- augment(wboost_fit_final, new_data = white_train) 
+wboosted_acc <- wpredicted %>% accuracy(truth = quality, estimate = .pred_class) %>% mutate(model_type = "White Boosted Trees Model")
+wboosted_rocauc <-  wpredicted %>% roc_auc(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White Boosted Trees Model")
+wBoostedROCCurve <- wpredicted %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+wBoostedConfusionMatrix <- wpredicted %>% conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+
+Here are our final results.
+
+```{r white boosted tree final code}
+wboosted_acc
+wboosted_rocauc
+wBoostedROCCurve
+wBoostedConfusionMatrix
+```
+
+<br>
+
+The accuracy and `roc_auc` for the boosted trees model on the white wine data set is 1, meaning every single observation was correctly classified in the model. This model has the potential to run amazingly on the testing data, although there is undeniable evidence of overfitting.
+
+### **Determining Best Fit**
+
+```{r white best fit1, message=FALSE}
+wbest_roc_table <- rbind(wbest_rocauc[1,c(2,4)], wbest_rocauc1[1,c(4,6)], wbest_rocauc2[1,c(2,4)] ) %>% mutate(model_type = c("Decision Tree", "Random Forest", "Boosted Trees"))
+wbest_roc_table
+# We will test our model using Boosted Trees and Random Forest 
+```
+
+As we can see, between the three tree based methods we ran, the two with the highest `roc_auc` values were Boosted Trees and Random Forest. From our earlier calculations, linear discriminant analysis using principal component analysis had a higher accuracy than Decision Trees so we will use that as our third model.
+
+To conclude, we will test our data on three models: LDA using PCA, Random Forest and Boosted Trees. <br>
+
+### **Predicting on the Testing Data**
+
+#### Testing the PCA LDA model on the data:
+
+```{r white PCA LDA testing code, eval = FALSE, include = FALSE}
+pcalda_fit_test <- augment(fit_final, new_data = white_test) 
+pcalda_test_acc <- pcalda_fit_test %>% accuracy(truth = quality, estimate = .pred_class)
+pcalda_test_rocauc <- pcalda_fit_test %>% roc_auc(truth = quality, estimate = .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White Wine LDA Model using PCA")
+pcalda_test_roccurve <- pcalda_fit_test %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+pcalda_test_confusionmatrix <- pcalda_fit_test %>%
+  conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+
+```{r white PCA LDA testing visual}
+pcalda_test_acc
+pcalda_test_rocauc
+pcalda_test_roccurve
+pcalda_test_confusionmatrix
+```
+
+<br>
+
+#### Testing the Random Forest model on the data:
+
+```{r white random forest testing code, eval = FALSE, include=FALSE}
+wrandfor_pred_test <- augment(wrandfor_fit_final, new_data = white_test) 
+wrandfor_acc_test <- wrandfor_pred_test %>% accuracy(truth = quality, estimate = .pred_class) %>% mutate(model_type = "White Random Forest Model")
+wrandfor_rocauc_test <- wrandfor_pred_test %>% roc_auc(truth = quality, estimate = .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White Random Forest Model")
+wrandfor_roccurve_test <- wrandfor_pred_test %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+wrandfor_confusionmatrix_test <- augment(wrandfor_fit_final, new_data = white_test) %>%
+  conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+
+```{r white random forest testing visual}
+wrandfor_acc_test
+wrandfor_rocauc_test
+wrandfor_roccurve_test
+wrandfor_confusionmatrix_test
+```
+
+<br>
+
+#### Testing the Boosted Trees model on the data:
+
+```{r white boosted trees testing code, eval = FALSE, include=FALSE}
+wpredictedtest <- augment(wboost_fit_final, new_data = white_test) 
+wboosted_acc_test <- wpredictedtest %>% accuracy(truth = quality, estimate = .pred_class) %>% mutate(model_type = "White Boosted Trees Model")
+wboosted_rocauc_test <- wpredictedtest %>% roc_auc(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White Boosted Trees Model")
+wBoostedROCCurveTesting <- wpredictedtest %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+wBoostedConfusionMatrixTesting <- wpredictedtest %>% conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+
+```{r white boosted trees testing visual}
+wboosted_acc_test
+wboosted_rocauc_test
+wBoostedROCCurveTesting
+wBoostedConfusionMatrixTesting
+```
+
+<br> <br>
+
+### **Conclusion for White Wine Data Set**
+
+In conclusion, the Boosted Trees model did the best on the testing data for the White Wine data set with an accuracy of 65.7% and a roc auc level of 0.82. The Random Forest model is a close second with accuracy 60.8% and a roc auc value of 0.76. LDA did not work very well, and using principal component analysis did not have much of an improvement. We thought that it would due to the fact that many of our predictors had high correlation. Majority of our models do well in predicting values of 5 and 6. Although, in general, we have seen that all of the models thus far do not do as well with 3,4, and 8. This is probably due to the fact that there are not as many observations with this quality level.
+
+<br>
+
+## **Model Fitting for Red Wine**
+
+Next, let's see how the models perform on the red wine data set. We will be using the same type of models that we used in white wine in order to keep things consistent.
+
+### **Recipe**
+
+In our recipe for the red wine data set, we also selected for all the predictors, converted character or factored data into numeric binary data, and normalized all predictors.
+
+```{r red recipe, class.source = 'fold-show'}
+
+red_recipe <- recipe(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = red_train) %>% step_dummy(all_nominal_predictors()) %>% step_normalize(all_predictors())
+```
+
+### **K-Fold Cross Validation**
+
+Let's first explore linear discriminant analysis and naive Bayes classification through k-fold cross validation.
+
+#### **Linear Discriminant Analysis**
+
+For the linear discriminant analysis model, we use a classification mode and set the engine to `MASS`. We then add the model and recipe to a workflow and create a fit between the workflow and folded data. We are using `roc_auc` to evaluate accuracy.
+
+```{r red k-fold, message=FALSE, class.source = 'fold-show'}
+#lda model using cross validation
+rlda_model <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS") 
+
+rlda_wkflow<- workflow() %>% 
+  add_model(rlda_model) %>% 
+  add_recipe(red_recipe)
+
+rlda_fit_cross <- fit_resamples(rlda_wkflow, red_fold)
+
+collect_metrics(rlda_fit_cross)
+```
+
+<br>
+
+#### **Naive Bayes**
+
+Now, let's take a look at how our cross validation method works with a Naive Bayes model. In particular, let's see if the accuracy increases.
+
+```{r k-fold naive bayes, message=FALSE, class.source = 'fold-show'}
+#naive bayes model using cross validation
+rnb_mod <- naive_Bayes() %>% 
+  set_mode("classification") %>% 
+  set_engine("klaR") %>% 
+  set_args(usekernel = FALSE) 
+
+rnb_wkflow <- workflow() %>% 
+  add_model(rnb_mod) %>% 
+  add_recipe(red_recipe)
+
+rnb_fit_cross <- fit_resamples(rnb_wkflow, red_fold)
+
+collect_metrics(rnb_fit_cross)
+```
+
+Through k-fold cross validation, we can see that the linear discriminant analysis model produces a more accurate model than the Naive Bayes model with 60% versus 53% accuracy.
+
+### **Principal Component Analysis**
+
+To conduct principal component analysis, we will begin by setting up another recipe specifically for this purpose. With this, we conduct an LDA workflow and model fit. We are tuning the model to find the best number of principal components using k-fold cross validation.
+
+```{r red pca lda set up, class.source = 'fold-show', message = FALSE, warning=FALSE, eval = FALSE}
+red_recipe_pca <- recipe(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = red_train) %>% step_dummy(all_nominal_predictors()) %>% step_normalize(all_predictors()) %>% step_pca(all_numeric_predictors(), num_comp = tune())
+
+# column name(s) must match tune() above
+tuneGrid <- expand.grid(num_comp = 1:ncol(red_recipe_pca$template))
+
+# control tune_grid() process below
+trControl <- control_grid(verbose = TRUE, allow_par = FALSE)
+
+rlda_pca_wkflow <- workflow() %>% 
+  add_model(rlda_model) %>% 
+  add_recipe(red_recipe_pca)
+
+rpca_lda_fit <- rlda_pca_wkflow %>%
+  tune_grid(resamples = red_fold,
+            grid = tuneGrid,
+            metrics = metric_set(accuracy),
+            control = trControl)
+```
+
+```{r red pca lda metrics}
+rpca_lda_metrics <- rpca_lda_fit %>% collect_metrics()
+rpca_lda_metrics
+```
+
+<br>
+
+This next visualization represents the number of principal components versus the accuracy of the model. We can observe an obvious spike in accuracy also at 9 principal components.
+
+```{r red pca lda plot metrics}
+ggplot(rpca_lda_metrics, aes(x = num_comp, y = mean)) +
+  geom_line(color = "#3E4A89FF", linewidth = 2, alpha = 0.6) +
+  scale_x_continuous(breaks = 1:ncol(red_recipe_pca$template)) +
+  facet_wrap(~.metric) +
+  theme_bw()
+```
+
+```{r red pca lda fit, eval = FALSE,  include = FALSE}
+rpca_lda_fit %>% show_best(metric = "accuracy")
+
+(bestTune <- rpca_lda_fit %>% select_by_one_std_err(num_comp, metric = "accuracy"))
+
+rlda_pca_wkflow_final <- rlda_pca_wkflow %>% finalize_workflow(bestTune)
+
+rfit_final <- rlda_pca_wkflow_final %>% fit(red_train)
+
+red.PCALDA <- tibble(red_train,
+       predict(rfit_final, new_data =red_train, type = "class"), # predicted class
+       predict(rfit_final, new_data = red_train, type = "prob"), # posterior prob. for classes
+       as_tibble(predict(rfit_final, new_data = red_train, type = "raw")$x)) # LD scores
+```
+
+<br>
+
+This next graph is a visualization of the actual quality and the predicted qualities. We are only displaying about half of the data, so the plot is easier to interpret. The plot displays the clustering of the data very well for each quality level. In addition, we can visually see how well the model predicts the qualities accurately, and around how often or how greatly the model fails.
+
+```{r red pca lda plot fit}
+# plot
+ggplot(red.PCALDA, aes(x = LD1, y = LD2)) +
+  geom_point(aes(color = quality, shape = .pred_class)) + 
+  theme_bw() +
+  ggtitle("PCA-LDA (DAPC) on Red Wine Training dataset, using 9 PC")
+```
+
+```{r red pca lda final fit, eval = FALSE,include=FALSE}
+rpcalda_fit <- augment(rfit_final, new_data = red_train) 
+rpcalda_acc <- rpcalda_fit %>% accuracy(truth = quality, estimate = .pred_class)
+rpcalda_rocauc <- rpcalda_fit %>% roc_auc(truth = quality, estimate = .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White Wine LDA Model using PCA ")
+rpcalda_roccurve <- rpcalda_fit %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+rpcalda_confusionmatrix <- rpcalda_fit %>%
+  conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+
+<br>
+
+```{r red pca lda final fit visual}
+rpcalda_acc
+rpcalda_rocauc
+rpcalda_roccurve
+rpcalda_confusionmatrix
+```
+
+These metrics and graphs reveal how accurately the principal component analysis works on the training data with a linear discriminant analysis model. The `roc_auc` curves are the best for qualities 3 and 8, although overall PCA LDA is still only moderately effective as the accuracy is 61%. Through the confusion matrix, we can see the model predicted `5`s well.
+
+### **Single Decision Tree**
+
+Since a value of about 61% is only moderately accurate, we will try several tree methods to see if the produce more accurate results on the training data set of red wine. First, we will look at the model for a single decision tree.
+
+First, we set up a specification with the engine `rpart` and for classification.
+
+```{r red decision tree, message=FALSE, eval=FALSE, class.source = 'fold-show'}
+# decision tree specification
+rtree_spec <- decision_tree() %>%
+  set_engine("rpart")
+
+# setting mode to classification
+rtree_spec_class <- rtree_spec %>%
+  set_mode("classification")
+```
+
+<br>
+
+Next, we fit the specification to the training data.
+
+```{r red decision tree fit, eval=FALSE, class.source = 'fold-show'}
+rclass_tree_fit <- rtree_spec_class %>%
+  fit(quality ~ volatile.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = red_train)
+```
+
+<br>
+
+Here is a visual of how the decision tree model works with our data.
+
+```{r red decision tree fit visual, class.source = 'fold-show'}
+rclass_tree_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+
+<br>
+
+Now, we augment the model on the training model and evaluate the accuracy and confusion matrix. The accuracy is 61% and the confusion matrix shows us that `5` and `6` quality are evaluated the best, as in the white wine single decision tree model.
+
+```{r red decision tree augment training}
+# augmented on training 
+augment(rclass_tree_fit, new_data = red_train) %>%
+  accuracy(truth = quality, estimate = .pred_class)
+
+augment(rclass_tree_fit, new_data = red_train) %>%
+  conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+
+Here, we are tuning our model to determine the best measures for `cost_complexity`.
+
+```{r red decision tree tuning, eval=FALSE, class.source = 'fold-show'}
+# tuning cost complexity 
+rclass_tree_wf<- workflow() %>%
+  add_model(rtree_spec_class %>% 
+              set_args(cost_complexity = tune())) %>% 
+  add_formula(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol)
+```
+
+```{r red decision tree tuning grid, include=FALSE, eval = FALSE}
+param_grid <- grid_regular(cost_complexity(range = c(-3,-1)), levels = 10)
+
+tune_res_red <- tune_grid(
+  rclass_tree_wf,
+  resamples = red_fold,
+  grid = param_grid,
+  metric = metric_set(accuracy)
+)
+```
+
+<br>
+
+Now we produce a graph of accuracies and `roc_auc` levels for various cost complexity parameters.
+
+```{r red decision tree autoplot}
+autoplot(tune_res_red)
+```
+
+<br>
+
+Here, we can see that accuracy is highest at around .0075 value and `roc_auc` is highest around .010 value for the cost-complexity parameter.
+
+```{r red decision tree best complexity, eval=FALSE, include = FALSE}
+# extracting the best cost complexity parameter
+best_complexity <- select_best(tune_res_red)
+
+rclass_tree_final <- finalize_workflow(rclass_tree_wf, best_complexity)
+
+rclass_tree_final_fit <- fit(rclass_tree_final, data = red_train)
+```
+
+```{r red decision tree final fit visual}
+rclass_tree_final_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+
+```{r red decision tree augment training final}
+# augmented on training 
+augment(rclass_tree_final_fit, new_data = red_train) %>%
+  accuracy(truth = quality, estimate = .pred_class)
+
+augment(rclass_tree_final_fit, new_data = red_train) %>%
+  conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+
+```{r red decision tree augment testing final, eval=FALSE}
+# augmented on testing 
+augment(rclass_tree_final_fit, new_data = red_test) %>%
+  conf_mat(truth = quality, estimate = .pred_class) 
+
+augment(rclass_tree_final_fit, new_data = red_test) %>%
+  accuracy(truth = quality, estimate = .pred_class)
+```
+
+This is the overall accuracy measures, `roc_auc` measures, `ROC` curves and confusion matrix that is returned my our decision tree model on the white wine data set. The accuracy is slightly less than the principal component model with linear discriminant analysis that we previously conducted.
+
+### **Random Forest**
+
+In hopes of improving our results, we will now look at the random forest model. Here, we set up our model with the engine `ranger` and set the importance to `impurity` to find a set of predictors that best explains the variance in the response variable, and still with a classification approach.
+
+```{r red random forest set up, message=FALSE, eval=FALSE, class.source = 'fold-show'}
+rrandfor <- rand_forest() %>% set_engine("ranger", importance = "impurity") %>% set_mode("classification")
+```
+
+Then, we set up our workflow, tuning `range`, `trees` and `min_n`
+
+```{r red random forest workflow, eval=FALSE, class.source = 'fold-show'}
+rrandfor_wf <- workflow() %>%
+  add_model(rrandfor %>%
+              set_args(mtry = tune(), trees = tune(), min_n = tune())) %>% 
+  add_formula(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol)
+```
+
+```{r red random forest tuning, eval=FALSE, class.source = 'fold-show', include = FALSE}
+# tuning the model to find the best arguments 
+param_grid2 <- grid_regular(mtry(range = c(1,9)), trees(range = c(15,17)), min_n(range = c(30,50)), levels = 8)
+
+rtune_res_randfor <- tune_grid(
+  rrandfor_wf,
+  resamples = red_fold,
+  grid = param_grid2
+)
+```
+
+This visualization shows the accuracy and `roc_auc` of the various values we are tuning our model with. For the final recipe, we will extract the metrics that return the best accuracy and `roc_auc`.
+
+```{r red random forest autoplot}
+rAutoPlotRF
+```
+
+Now we will collect accuracy metrics to find the model with the highest mean.
+
+```{r red random forest metrics, eval=FALSE, class.source = 'fold-show'}
+# collecting metrics to find best mean
+rbest_rocauc1 <- collect_metrics(rtune_res_randfor) %>% arrange(desc(mean))
+print(rbest_rocauc1)
+rbest_metric1 <- select_best(rtune_res_randfor)
+
+rrandfor_final <- rand_forest(mtry = 7, trees = 17, min_n = 32) %>% set_engine("ranger", importance = "impurity") %>% set_mode("classification")
+rrandfor_fit_final <- fit(rrandfor_final, formula = quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol,data = red_train)
+```
+
+Here are our final results.
+
+```{r red random forest final visual}
+rVIP
+print(rrandfor_acc)
+print(rrandfor_rocauc)
+rrandfor_roccurve
+rrandfor_confusionmatrix
+```
+
+Overall the random forest for the red wine data set has a drastic improvement in terms of the accuracy and `roc_auc`. The variance importance plot reveals that alcohol, volatile acidity and sulphates are most important variables in the data for predicting quality. Every single `roc_auc` curve is almost perfect, although as we have learned through the course, this model may be over fitting, and as a result, may not perform as well on the testing data set. This model did the best for predicting wine qualities of `5` and `6`.
+
+### **Boosted Tree**
+
+Finally, let's look at the boosted tree model. We set up our specifications with engine `xgboost` and with a classification approach.
+
+```{r red boosted tree spec, message=FALSE, eval=FALSE, class.source = 'fold-show'}
+rboost_spec <-  boost_tree(tree_depth = 5) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+```
+
+Then, we set up our workflow, tuning only `trees` this time.
+
+```{r red boosted tree workflow, eval=FALSE, class.source = 'fold-show' }
+rboost_wf <- workflow() %>%
+  add_model(rboost_spec %>%
+              set_args(trees = tune())) %>% 
+  add_formula(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol)
+```
+
+```{r red boosted tree tuning grid, eval=FALSE, include = FALSE}
+param_grid4 <- grid_regular(trees(range = c(10,2000)), levels = 10)
+
+rtune_res_boosted <- tune_grid(
+  rboost_wf,
+  resamples = red_fold,
+  grid = param_grid4
+)
+```
+
+This plot below visualizes the accuracy and `roc_auc` levels for the number of trees. Since we tune the value for the number of trees, we can choose to use the number of trees which has the highest accuracy and `roc_auc` levels.
+
+```{r red boosted tree autoplot}
+rBoostedAutoPlot
+```
+
+Here we can see that accuracy is highest for 250 to 500 trees, and `roc_auc` spikes at around 250 trees.
+
+Now, we collect accuracy metrics to see which model has the highest mean.
+
+```{r red boosted tree metrics, eval=FALSE, class.source = 'fold-show'}
+rbest_rocauc2 <- collect_metrics(rtune_res_boosted) %>% arrange(desc(mean))
+print(rbest_rocauc2)
+
+rbest_metric2 <- select_best(rtune_res_boosted)
+print(rbest_metric2)
+
+rboost_final <- boost_tree(tree_depth = 5, trees = 231)%>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+rboost_fit_final <- fit(rboost_final, formula = quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = red_train)
+
+rpredicted <- augment(rboost_fit_final, new_data = red_train) 
+rboosted_acc <- rpredicted %>% accuracy(truth = quality, estimate = .pred_class) %>% mutate(model_type = "White Boosted Trees Model")
+rboosted_rocauc <-  rpredicted %>% roc_auc(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White Boosted Trees Model")
+rBoostedROCCurve <- rpredicted %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+rBoostedConfusionMatrix <- rpredicted %>% conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+
+Here are our final results.
+
+```{r  red boosted tree final visuals}
+rboosted_acc
+rboosted_rocauc
+rBoostedROCCurve
+rBoostedConfusionMatrix
+```
+
+Based on these results, we can see that the boosted tree model also overfitted our red wine data set by our accuracy and `roc_auc` values of 1.
+
+<br>
+
+### **Determining Best Fit**
+
+```{r red best fit, message=FALSE, include = FALSE}
+rbest_rocauc
+rbest_rocauc1
+rbest_rocauc2
+rbest_roc_table <- rbind(rbest_rocauc[1,c(2,4)], rbest_rocauc1[1,c(4,6)], rbest_rocauc2[1,c(2,4)] ) %>% mutate(model_type = c("Decision Tree", "Random Forest", "Boosted Trees"))
+```
+
+```{r red best fit table}
+rbest_roc_table
+```
+
+As we can see, between the three tree based methods we ran, the two with the highest `roc_auc` values were Boosted Trees and Random Forest. LDA using PCA had a higher accuracy than Decision Trees so we will use that as our third model.
+
+To conclude, we will test our data on three models: LDA using PCA, Random Forest and Boosted Trees.
+
+<br>
+
+### **Predicting on the Testing Data**
+
+#### Testing the PCA LDA model on the data:
+
+```{r PCA LDA testing code, eval=FALSE, include = FALSE}
+rpcalda_fit_test <- augment(rfit_final, new_data = red_test) 
+rpcalda_test_acc <- rpcalda_fit_test %>% accuracy(truth = quality, estimate = .pred_class)
+rpcalda_test_rocauc <- rpcalda_fit_test %>% roc_auc(truth = quality, estimate = .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "Red Wine LDA Model using PCA")
+rpcalda_test_roccurve <- rpcalda_fit_test %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+rpcalda_test_confusionmatrix <- rpcalda_fit_test %>%
+  conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+
+```{r PCA LDA testing visual}
+rpcalda_test_acc
+rpcalda_test_rocauc
+rpcalda_test_roccurve
+rpcalda_test_confusionmatrix
+```
+
+#### Testing the Random Forest model on the data:
+
+```{r random forest testing code, eval = FALSE, include = FALSE}
+rrandfor_pred_test <- augment(wrandfor_fit_final, new_data = white_test) 
+rrandfor_acc_test <- wrandfor_pred_test %>% accuracy(truth = quality, estimate = .pred_class) %>% mutate(model_type = "White Random Forest Model")
+rrandfor_rocauc_test <- wrandfor_pred_test %>% roc_auc(truth = quality, estimate = .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White Random Forest Model")
+rrandfor_roccurve_test <- wrandfor_pred_test %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+rrandfor_confusionmatrix_test <- augment(wrandfor_fit_final, new_data = white_test) %>%
+  conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+
+```{r random forest testing visual}
+rrandfor_pred_test
+rrandfor_acc_test
+rrandfor_rocauc_test
+rrandfor_roccurve_test
+rrandfor_confusionmatrix_test
+```
+
+#### Testing the Boosted Trees model on the data:
+
+```{r boosted tree testing code, eval = FALSE, include = FALSE}
+rpredictedtest <- augment(wboost_fit_final, new_data = white_test) 
+rboosted_acc_test <- wpredictedtest %>% accuracy(truth = quality, estimate = .pred_class) %>% mutate(model_type = "White Boosted Trees Model")
+rboosted_rocauc_test <- wpredictedtest %>% roc_auc(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White Boosted Trees Model")
+rBoostedROCCurveTesting <- wpredictedtest %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+rBoostedConfusionMatrixTesting <- wpredictedtest %>% conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+
+```{r boosted tree testing visual}
+rpredictedtest
+rboosted_acc_test
+rboosted_rocauc_test
+rBoostedROCCurveTesting
+rBoostedConfusionMatrixTesting
+```
+
+<br> <br>
+
+### **Conclusion for Red Wine Data Set**
+
+In conclusion, the Boosted Trees model did the best on the testing data for the Red Wine data set with an accuracy of 67.4% and a `roc_auc` level of 0.77. The Random Forest model is a close second with accuracy 63.2% and a `roc_auc` value of 0.79. LDA did not work very well, and using principal component analysis did not have much of an improvement. We thought that it would due to the fact that many of our predictors had high correlation. Majority of our models do well in predicting values of `5` and `6`. Although, in general, we have seen that all of the models thus far do not do as well with `3`, `4`, and `8`. This is probably due to the fact that there are not as many observations with this quality level.
+
+## **Final Thoughts**
+
+Overall, we have successfully conducted analysis on both the white wine data set and the red wine data set by constructing 4 models for each wine type and analyzing the results. Generally, tree based models performed the best for predicting the quality of wines given the 11 predictors. For both data sets, the boosted trees model did the best in terms of the accuracy and `roc_auc`. The naive Bayes and LDA models with and without PCA did not compare to the tree based methods in terms of these metrics. Although it is important to note that tree based methods require much more computing power than the other models we looked into.
+
+As well as a fruitful exercise in machine learning and data modelling, we learned how the quality of white wine generally increases with alcohol content, and red wine is more desirable when it is less acidic. If we were to repeat this supervised machine learning project again, we would want to take into account a greater number of categorical predictors (if available) such as location grown, type of soil, and type of grape. In our code, we would modify our decision tree and boosted tree recipes and models to avoid overfitting the data to the training set. 
+
+<br>
+<br>
+<br>
