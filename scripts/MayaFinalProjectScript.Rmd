@@ -1,0 +1,464 @@
+---
+title: "Maya Version - Final Project"
+author: "Safiya Alavi and Maya Sinha"
+date: "2022-10-08"
+output: html_document
+---
+## lda testing
+```{r white lda testing setup, message=FALSE, class.source = 'fold-show', eval=FALSE}
+#fit the workflow to the training data
+wlda_fit <- fit(wlda_wkflow, white_train)
+
+#predict on the testing data, selecting for quality as the classification response
+wlda_res <- predict(wlda_fit, new_data = white_test %>%  select(-quality), type = "class" ) 
+
+#add a column for the actual value of quality next to the predicted value
+wlda_res <- bind_cols(wlda_res, white_test %>%  select(quality)) 
+```
+
+```{r white lda testing visual, eval=FALSE}
+# returning the accuracy, roc_auc, roc_auc curves, heatmap 
+wlda_pred <- augment(wlda_fit, new_data = white_test) 
+wlda_acc <- wlda_pred %>% accuracy(truth = quality, estimate = .pred_class)
+wlda_rocauc <- wlda_pred %>% roc_auc(truth = quality, estimate = .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White LDA Model")
+wlda_roccurve <- wlda_pred %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+wlda_confusionmatrix <- wlda_pred %>% conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+
+```{r white lda testing visual, eval=FALSE, class.source = 'fold-show'}
+print(wlda_acc)
+print(wlda_rocauc)
+wlda_roccurve
+wlda_confusionmatrix
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(tidyverse)
+library(tidymodels)
+library(corrplot)
+library(ggthemes)
+tidymodels_prefer()
+```
+
+## Overview of Data Set
+
+<br> 
+
+We are analyzing the quality of wine based on 11 predictors: fixed acidity, volatile acidity, citric acid, residual sugar, chlorides, free sulfur dioxide, total sulfur dioxide, density, pH, sulfates, alcohol. Quality, in this instance, is defined as an indicator of its craftsmanship and, thus, desirability which can be used, for example, in pricing. Quality does not necessarily indicate if a wine has gone bad. We will use two data sets -- one for white wine and the other for red -- to create two respective machine learning models. There are 4899 observations in the white wine data set and 1600 observations in the red wine data set. 
+
+
+## Overview of Research Questions 
+
+<br>
+
+We are interested in conducting analysis on both the white and red wine to assess the quality of wine in new wines in production so that they may be accurately priced and marketed.  
+
+## Proposed Project Timeline 
+
+<br>
+
+Week 2: Data cleaning<br>
+Week 3-5: Exploratory Data Analysis<br>
+Week 6-8: Model Building<br>
+Week 9: Conclusion and final touches<br>
+
+## Any questions or concerns
+
+<br>
+
+
+# Loading Data and Packages 
+This project uses data on the white and red wine, which records information about the details of the wine. 
+
+```{r load packages and data}
+# load packages
+library(tidyverse)
+library(lubridate)
+library(tidymodels)
+library(dplyr)
+library(janitor)
+
+white <- read.csv("Wine Dataset/winequality-white.csv", sep = ";")
+
+red <- read.csv("Wine Dataset/winequality-red.csv", sep = ";")
+
+# Make Column Names Clean 
+white %>% clean_names()
+red %>% clean_names()
+
+# Change quality to factor
+white$quality <- factor(white$quality, levels = c(3,4,5,6,7,8,9))
+red$quality <- factor(red$quality, levels = c(3,4,5,6,7,8,9))
+
+# Adding type
+white$type <- "White"
+red$type <- "Red"
+
+# data frame of combined wine
+combinedWine <- rbind(white, red)
+
+white
+
+red
+```
+
+
+# Data Cleaning 
+
+Our data does not need to be cleaned because it's perfect :D
+
+# Data Split
+
+```{r data split}
+white_split <- white %>% 
+  initial_split(prop = 0.8, strata = "quality")
+
+white_train <- training(white_split)
+white_test <- testing(white_split)
+
+red_split <- red %>% 
+  initial_split(prop = 0.8, strata = "quality")
+
+red_train <- training(red_split)
+red_test <- testing(red_split)
+```
+
+## Exploratory Data Analysis
+
+What sort of factors do winemakers and sommeliers look for in a quality wine? Generally, quality is determined by acidity, dryness, flavor profile or taste, alcohol content, and how well the wine is preserved or how it changes as it is stored. In our exploratory data analysis, we will analyze our predictors based on these five categories. First, acidity levels can be summarized through the pH levels, fixed acidity, volatile acidity, and citric acid content. Dryness is determined by the density. Taste can be broken down into sweetness and saltiness, which are caused by residual sugar and chlorides respectively. We will analyze alcohol content singularly to see its effect on the wine quality. Lastly, sulfurous compounds are what is generally used to preserve wine, so we will analyze free sulfur dioxide, total sulfur dioxide, and sulfates to see if the way a wine is preserved interacts with wine quality in an interesting way.
+
+Our data can be split into two datasets because experts look for different levels of acidity, sugar, etc. for white wine and red wine. Thus, we will have 3 different representations of the data: one for white wine, one for red wine, and one for both. 
+
+All of our predictors are continuous, so we will use boxplots, histograms, and scatterplots to visualize our data and determine how to approach feature selection.  
+
+
+```{r correlation matrix}
+white %>% 
+  select(is.numeric) %>% 
+  cor() %>% 
+  corrplot(type = 'lower', diag = FALSE, 
+           method = 'color', main = 'White Wine Correlation Plot')
+
+red %>% 
+  select(is.numeric) %>% 
+  cor() %>% 
+  corrplot(type = 'lower', diag = FALSE, 
+           method = 'color', main = 'Red Wine Correlation Plot')
+```
+
+```{r combined quality histogram}
+combinedWine <- rbind(white, red)
+
+
+ggplot(combinedWine, aes(quality)) %>%  select(is.numeric) %>% 
+  geom_histogram(bins = 70, color = "white", binwidth = 1) +
+  labs(
+    title = "Histogram of Quality - Total Wine"
+  ) 
+
+```
+
+```{r separated quality histogram}
+ggplot(white_train, aes(quality)) +
+  geom_histogram(bins = 70, color = "white", binwidth = 1) +
+  labs(
+    title = "Histogram of Quality - White Wine"
+  )
+
+ggplot(red_train, aes(quality)) +
+  geom_histogram(bins = 70, color = "white", binwidth = 1) +
+  labs(
+    title = "Histogram of Quality - Red Wine"
+  )
+```
+
+```{r EDA sugar boxplot}
+#all values   #add chlorides too
+ggplot(combinedWine, aes(x = residual.sugar, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  ggtitle("Residual Sugar Content for Red and White Wine") +
+  labs(x = "Residual Sugar Content", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "YlOrRd")
+
+#all zoomed in 
+ggplot(combinedWine, aes(x = residual.sugar, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  coord_cartesian( xlim = c(0,18), ylim = NULL, default = FALSE ) +
+  ggtitle("Residual Sugar Content for Red and White Wine") +
+  labs(x = "Residual Sugar Content", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "YlOrRd")
+
+#white 
+ggplot(white, aes(x = residual.sugar, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  ggtitle("Residual Sugar Content for White Wine") +
+  labs(x = "Residual Sugar Content", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "BuPu")
+
+#white zoomed in
+ggplot(white, aes(x = residual.sugar, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  coord_cartesian( xlim = c(0,20), ylim = NULL, default = FALSE ) +
+  ggtitle("Residual Sugar Content for White Wine") +
+  labs(x = "Residual Sugar Content", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "BuPu")
+
+#red
+ggplot(red, aes(x = residual.sugar, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  ggtitle("Residual Sugar Content for Red Wine") +
+  labs(x = "Residual Sugar Content", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "RdPu")
+
+#red zoomed in
+ggplot(red, aes(x = residual.sugar, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  coord_cartesian( xlim = c(0,4), ylim = NULL, default = FALSE ) +
+  ggtitle("Residual Sugar Content for Red Wine") +
+  labs(x = "Residual Sugar Content", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "RdPu")
+```
+```{r EDA preservatives boxplot}
+#Free Sulfur Dioxide - all values
+ggplot(combinedWine, aes(x = free.sulfur.dioxide, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  labs(title = "Free Sulfur Dioxide for Red and White Wine", x = "Free Sulfur Dioxide", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "YlOrRd")
+
+#FSD - white
+ggplot(white, aes(x = free.sulfur.dioxide, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  labs(title = "Free Sulfur Dioxide for White Wine", x = "Free Sulfur Dioxide", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "BuPu")
+
+#FSD - red
+ggplot(red, aes(x = free.sulfur.dioxide, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  labs(title = "Free Sulfur Dioxide for Red Wine", x = "Free Sulfur Dioxide", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "RdPu")
+
+#Total Sulfur Dioxide - all values
+ggplot(combinedWine, aes(x = total.sulfur.dioxide, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  labs(title = "Total Sulfur Dioxide for Red and White Wine", x = "Total Sulfur Dioxide", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "YlOrRd")
+
+#TSD - white
+ggplot(white, aes(x = total.sulfur.dioxide, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  labs(title = "Total Sulfur Dioxide for White Wine", x = "Total Sulfur Dioxide", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "BuPu")
+
+#TSD - red
+ggplot(red, aes(x = total.sulfur.dioxide, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  labs(title = "Total Sulfur Dioxide for Red Wine", x = "Total Sulfur Dioxide", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "RdPu")
+
+#sulfates - all values
+ggplot(combinedWine, aes(x = sulphates, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  labs(title = "Sulfates for Red and White Wine", x = "Sulfates", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "YlOrRd")
+
+#sulfates - white
+ggplot(white, aes(x = sulphates, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  labs(title = "Sulfates for White Wine",  x = "Sulfates", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "BuPu")
+
+#sulfates - red
+ggplot(red, aes(x = sulphates, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  labs(title = "Sulfates for Red Wine", x = "Sulfates", y = "RdPu") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "YlOrRd")
+```
+
+
+## Model Fitting
+
+Based on the correlations between predictors, we interacted those terms in our recipe. The terms we interact are different for white wine and red wine. We also excluded fixed acidity from our recipe because in the boxplot, we can see that the amount of fixed acidity has little effect on the quality of the wine for both white and red wine. 
+
+```{r recipe}
+white_recipe <- recipe(quality ~ volatile.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = white_train) %>% step_dummy(all_nominal_predictors()) %>% step_interact(~density:residual.sugar + density:alcohol) %>% step_normalize(all_predictors())
+
+red_recipe <- recipe(quality ~ volatile.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = red_train) %>% step_dummy(all_nominal_predictors()) %>% step_interact(~citric.acid:fixed.acidity + density:fixed.acidity + ph:fixed.acidity + citric.acid:volatile.acidity + free.sulfur.dioxide:total.sulfur.dioxide)%>% step_normalize(all_predictors())
+
+```
+
+
+```{r log reg}
+
+# white wine
+wlog_model <- logistic_reg() %>% 
+  set_engine("glm") %>% set_mode("classification")
+
+wlog_wkflow <- workflow() %>% 
+  add_model(wlog_model) %>% 
+  add_recipe(white_recipe)
+
+wlog_reg_fit <- fit(wlog_wkflow, white_train)
+
+
+# red wine
+rlog_model <- logistic_reg() %>% 
+  set_engine("glm") %>% set_mode("classification")
+
+rlog_wkflow <- workflow() %>% 
+  add_model(rlog_model) %>% 
+  add_recipe(red_recipe)
+
+rlog_reg_fit <- fit(rlog_wkflow, red_train)
+
+```
+
+```{r lda}
+# white wine
+wlda_mod <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+wlda_wkflow <- workflow() %>% 
+  add_model(wlda_mod) %>% 
+  add_recipe(white_recipe)
+
+#wlda_fit <- fit(wlda_wkflow, white_train)
+
+# red wine
+rlda_mod <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+rlda_wkflow <- workflow() %>% 
+  add_model(rlda_mod) %>% 
+  add_recipe(red_recipe)
+
+rlda_fit <- fit(rlda_wkflow, red_train)
+```
+
+```{r qda}
+# white wine
+wqda_mod <- discrim_quad() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+wqda_wkflow <- workflow() %>% 
+  add_model(wqda_mod) %>% 
+  add_recipe(white_recipe)
+
+wqda_fit <- fit(wqda_wkflow, white_train)
+
+# red wine 
+rqda_mod <- discrim_quad() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+rqda_wkflow <- workflow() %>% 
+  add_model(rqda_mod) %>% 
+  add_recipe(red_recipe)
+
+rqda_fit <- fit(rqda_wkflow, red_train)
+```
+
+```{r polynomial reg}
+
+```
+
+```{r accuracy}
+collect_metrics(wlog_reg_fit)
+collect_metrics(rlog_reg_fit)
+collect_metrics(wlda_fit)
+collect_metrics(rlda_fit)
+
+```
+
+```{r white; ridge no tuning}
+ridge_spec <- linear_reg(mixture = 0, penalty = 0) %>%
+  set_mode("regression") %>%
+  set_engine("glmnet")
+
+ridge_fit <- fit(ridge_spec, quality ~ ., data = white_train)
+tidy(ridge_fit, penalty = 0)
+
+ridge_fit %>%
+  extract_fit_engine() %>%
+  plot(xvar = "lambda")
+
+predict(ridge_fit, new_data = white_train, penalty = 0)
+
+```
+
+```{r white; ridge with tuning}
+ridge_recipe <- 
+  recipe(formula = quality ~ ., data = white_train) %>% 
+  step_novel(all_nominal_predictors()) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_zv(all_predictors()) %>% 
+  step_normalize(all_predictors())
+
+ridge_spec <- 
+  linear_reg(penalty = tune(), mixture = 0) %>% 
+  set_mode("regression") %>% 
+  set_engine("glmnet")
+
+ridge_workflow <- workflow() %>% 
+  add_recipe(ridge_recipe) %>% 
+  add_model(ridge_spec)
+
+penalty_grid <- grid_regular(penalty(range = c(-5, 5)), levels = 50)
+
+tune_res <- tune_grid(
+  ridge_workflow,
+  resamples = white_fold, 
+  grid = penalty_grid
+)
+
+tune_res
+
+autoplot(tune_res)
+
+collect_metrics(tune_res)
+
+best_penalty <- select_best(tune_res, metric = "rsq")
+
+ridge_final <- finalize_workflow(ridge_workflow, best_penalty)
+
+ridge_final_fit <- fit(ridge_final, data = white_train)
+
+augment(ridge_final_fit, new_data = white_test) %>%
+  rsq(truth = quality, estimate = .pred)
+```
+
+```{r best fit}
+#add lda metric
+best_roc_table <- rbind(best_tree_roc[1,c(2,4)], best_rf_roc[1,c(4,6)], best_bt_roc[1,c(2,4)] )
+best_roc_table 
+
+best <-  select_best(rf_tune_res, metric = "roc_auc")
+final_wf <- finalize_workflow(rf_wf, best)
+final_fit_test <- fit(final_wf, data = pokemon_test)
+
+predicted <- augment(final_fit_test, new_data = pokemon_test) 
+predicted %>% roc_auc(type_1, .pred_Bug, .pred_Fire, .pred_Grass, .pred_Normal, .pred_Water, .pred_Psychic) 
+
+predicted %>% conf_mat(truth = type_1, estimate = .pred_class) %>% autoplot(type = "heatmap")
+```
+

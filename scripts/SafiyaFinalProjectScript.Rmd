@@ -1,0 +1,917 @@
+---
+title: "SafiyaFinalProjectScript"
+author: "Safiya Alavi"
+date: "10/25/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(tidyverse)
+library(tidymodels)
+library(corrplot)
+library(ggthemes)
+library(klaR) # for naive bayes
+library(discrim)
+library(glmnet)
+library(rpart)
+library(randomForest)
+library(xgboost)
+library(ranger)
+library(vip)
+library(lubridate)
+library(dplyr)
+library(ISLR)
+library(rpart.plot)
+library(janitor)
+library(ggpubr)
+
+tidymodels_prefer()
+
+# LDA 
+load("WhiteLDA.rda")
+load("RedLDA.rda")
+
+# LDA with PCA
+load("WhiteLDAPCA.rda")
+load("RedLDAPCA.rda")
+
+# Decision Tree
+load("WhiteWineDecisionTree.rda")
+load("RedWineDecisionTree.rda")
+
+# Random Forest 
+load("WhiteWineRandomForest.rda")
+load("RedWineRandomForest.rda")
+
+# Boosted Trees
+load("WhiteWineBoostedTrees.rda")
+load("RedWineBoostedTrees.rda")
+```
+
+## Overview of Data Set
+
+<br>
+
+We are analyzing the quality of wine based on 11 predictors: fixed acidity, volatile acidity, citric acid, residual sugar, chlorides, free sulfur dioxide, total sulfur dioxide, density, pH, sulfates, alcohol. Quality, in this instance, is defined as an indicator of its craftsmanship and, thus, desirability which can be used, for example, in pricing. Quality does not necessarily indicate if a wine has gone bad. We will use two data sets -- one for white wine and the other for red -- to create two respective machine learning models. There are 4899 observations in the white wine data set and 1600 observations in the red wine data set.
+
+## Overview of Research Questions
+
+<br>
+
+We are interested in conducting analysis on both the white and red wine to assess the quality of wine in new wines in production so that they may be accurately priced and marketed.
+
+## Proposed Project Timeline
+
+<br>
+
+Week 2: Data cleaning<br> Week 3-5: Exploratory Data Analysis<br> Week 6-8: Model Building<br> Week 9: Conclusion and final touches<br>
+
+## Any questions or concerns
+
+<br>
+
+# Loading Data and Packages
+
+This project uses data on the white and red wine, which records information about the details of the wine.
+
+```{r load data, message = FALSE}
+
+white <- read.csv("Wine Dataset/winequality-white.csv", sep = ";")
+
+red <- read.csv("Wine Dataset/winequality-red.csv", sep = ";")
+
+# Make Column Names Clean 
+#colnames(white) <- c("Fixed_Acidity", "Volatile_Acidity","Citric_Acid", "Residual_Sugar", "Chlorides", "Free_Sulfur_Dioxide", "Total_Sulfur_Dioxide", "Density", "pH", "Sulfates", "Alcohol", "Quality")
+#colnames(red) <- c("Fixed_Acidity", "Volatile_Acidity","Citric_Acid", "Residual_Sugar", "Chlorides", "Free_Sulfur_Dioxide", "Total_Sulfur_Dioxide", "Density", "pH", "Sulfates", "Alcohol", "Quality")
+white %>% clean_names()
+red %>% clean_names()
+
+white <- white[white$quality < 9,]
+
+
+# Change quality to factor
+white$quality <- factor(white$quality, levels = c(3,4,5,6,7,8))
+red$quality <- factor(red$quality, levels = c(3,4,5,6,7,8))
+
+# Adding type
+white$type <- "White"
+red$type <- "Red"
+
+# data frame of combined wine
+combinedWine <- rbind(white, red)
+```
+
+# Data Cleaning
+
+Our data does not need to be cleaned because it's perfect :D
+
+# Data Split
+
+```{r data split, message = FALSE}
+set.seed(1234)
+white_split <- white %>% 
+  initial_split(prop = 0.7, strata = "quality")
+
+white_train <- training(white_split)
+white_test <- testing(white_split)
+
+red_split <- red %>% 
+  initial_split(prop = 0.7, strata = "quality")
+
+red_train <- training(red_split)
+red_test <- testing(red_split)
+
+white_fold <- vfold_cv(white_train, v = 5)
+red_fold <- vfold_cv(red_train, v = 5)
+```
+
+## Exploratory Data Analysis
+
+```{r eda correlation matrix, message = FALSE}
+white %>% 
+  select(is.numeric) %>% 
+  cor() %>% 
+  corrplot(type = 'lower', diag = FALSE, 
+           method = 'color', main = 'White Wine Correlation Plot')
+
+red %>% 
+  select(is.numeric) %>% 
+  cor() %>% 
+  corrplot(type = 'lower', diag = FALSE, 
+           method = 'color', main = 'Red Wine Correlation Plot')
+```
+
+```{r eda boxplot of alcohol versus quality, message = FALSE}
+ggplot(white_train, aes(x = alcohol, y = quality)) + geom_boxplot(aes(fill = quality))+ geom_point() + 
+  labs(title = "White Wine Alcohol Content versus Quality", fill = "Quality")  +
+    scale_fill_brewer(palette="BuPu")
+
+ggplot(red_train, aes(x = alcohol, y = quality)) + geom_boxplot(aes(fill = quality))+ geom_point() + 
+  labs(title = "Red Wine Alcohol Content versus Quality", fill = "Quality")  +
+    scale_fill_brewer(palette="RdPu")
+
+ggplot(combinedWine, mapping = aes(x = alcohol, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = alcohol, y = quality)) + labs(title = "Red and White Wine Alcohol Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd") + facet_wrap(. ~ type, nrow = 1)
+
+ggplot(combinedWine, mapping = aes(x = alcohol, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = alcohol, y = quality)) + labs(title = "Red and White Wine Alcohol Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="OrRd") 
+```
+
+```{r eda boxplot of fixed acidity, volatile acidity, and citric acid versus quality, message = FALSE}
+
+# FIXED ACIDITY 
+# White
+ggplot(white_train, aes(x = fixed.acidity, y = quality)) + geom_boxplot(aes(fill = quality))+ geom_point() + 
+  labs(title = "White Wine Fixed Acidity versus Quality", fill = "Quality")  +
+    scale_fill_brewer(palette="BuPu") + coord_cartesian( xlim = c(0,16), ylim = NULL, default = FALSE )
+
+# Red
+ggplot(red_train, aes(x = fixed.acidity, y = quality)) + geom_boxplot(aes(fill = quality))+ geom_point() + 
+  labs(title = "Red Wine Fixed Acidity versus Quality", fill = "Quality")  +
+    scale_fill_brewer(palette="RdPu") + coord_cartesian( xlim = c(0,16), ylim = NULL, default = FALSE )
+
+# Same Page but Seperate
+ggplot(combinedWine, mapping = aes(x = `fixed.acidity`, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = alcohol, y = quality)) + labs(title = "Red and White Fixed Acidity Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd") + facet_wrap(. ~ type, nrow = 1) +coord_cartesian( xlim = c(0,16), ylim = NULL, default = FALSE )
+
+# Combined
+ggplot(combinedWine, mapping = aes(x = `fixed.acidity`, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = alcohol, y = quality)) + labs(title = "Red and White Fixed Acidity Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd")+coord_cartesian( xlim = c(0,16), ylim = NULL, default = FALSE )
+# ___________________________________________________________________________
+# VOLATILE ACIDITY 
+# White
+ggplot(white_train, aes(x = `volatile.acidity`, y = quality)) + geom_boxplot(aes(fill = quality))+ geom_point() + 
+  labs(title = "White Wine Volatile Acidity versus Quality", fill = "Quality")  + scale_fill_brewer(palette="BuPu")+ coord_cartesian( xlim = c(0,1), ylim = NULL, default = FALSE )
+
+# Red
+ggplot(red_train, aes(x = `volatile.acidity`, y = quality)) + geom_boxplot(aes(fill = quality))+ geom_point() + 
+  labs(title = "Red Wine Volatile_Acidity versus Quality", fill = "Quality")  +
+    scale_fill_brewer(palette="RdPu") + coord_cartesian( xlim = c(0,1), ylim = NULL, default = FALSE )
+
+# Same Page but Seperate
+ggplot(combinedWine, mapping = aes(x = `volatile.acidity`, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = alcohol, y = quality)) + labs(title = "Red and White Volatile_Acidity Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd") + facet_wrap(. ~ type, nrow = 1) + coord_cartesian( xlim = c(0,1), ylim = NULL, default = FALSE )
+
+# Combined
+ggplot(combinedWine, mapping = aes(x = `volatile.acidity`, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = alcohol, y = quality)) + labs(title = "Red and White Volatile_Acidity Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd") +coord_cartesian( xlim = c(0,1), ylim = NULL, default = FALSE )
+
+# ___________________________________________________________________________
+# CITRIC ACID 
+# White
+ggplot(white_train, aes(x = `citric.acid`, y = quality)) + geom_boxplot(aes(fill = quality))+ geom_point() + 
+  labs(title = "White Wine Citric Acid Levels versus Quality", fill = "Quality")  + scale_fill_brewer(palette="BuPu")
+
+# Red
+ggplot(red_train, aes(x = `citric.acid`, y = quality)) + geom_boxplot(aes(fill = quality))+ geom_point() + 
+  labs(title = "Red Wine Citric Acid Levels versus Quality", fill = "Quality")  + scale_fill_brewer(palette="RdPu")
+
+# Same Page but Separate (Cut off at 1)
+ggplot(combinedWine, mapping = aes(x = `citric.acid`, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = alcohol, y = quality)) + labs(title = "Red and White Citric Acid Levels Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd") + facet_wrap(. ~ type, nrow = 1)+ coord_cartesian( xlim = c(0,1), ylim = NULL, default = FALSE )
+
+# Combined
+ggplot(combinedWine, mapping = aes(x = `citric.acid`, y = quality, fill = quality)) + geom_boxplot() + geom_point(white_train, mapping = aes(x = alcohol, y = quality)) + labs(title = "Red and White Citric Acid Levels Content versus Quality", fill = "Quality")  + scale_fill_brewer(palette="PuRd")+ coord_cartesian( xlim = c(0,1), ylim = NULL, default = FALSE )
+```
+
+```{r eda scatter plots}
+# scaled datasets 
+
+scaled_white = as.data.frame(scale(select(white, c(-quality,-type))))
+scaled_red = as.data.frame(scale(select(red, c(-quality,-type))))
+
+# WHITE
+# scaled white residual sugar versus density 
+wrsd = ggplot(scaled_white, aes(x = residual.sugar, y = density)) + geom_point()+scale_x_continuous(name = "Residual Sugar") + scale_y_continuous(name = "Density") + geom_smooth(method = "lm", se = FALSE)+ ggtitle(" Residual Sugar Versus Density") + theme(plot.title = element_text(size = 5))
+# scaled white alcohol versus density 
+wad = ggplot(scaled_white, aes(x = alcohol, y = density)) + geom_point()+scale_x_continuous(name = "Alcohol") + scale_y_continuous(name = "Density") + geom_smooth(method = "lm", se = FALSE)+ ggtitle("Alcohol Versus Density") + theme(plot.title = element_text(size = 5))
+
+# scaled white free sulfur dioxide versus total sulfur dioxide
+wfsdtsd = ggplot(scaled_white, aes(x = free.sulfur.dioxide, y = total.sulfur.dioxide)) + geom_point()+scale_x_continuous(name = "Free Sulfur Dioxide") + scale_y_continuous(name = "Total Sulfur Dioxide") + geom_smooth(method = "lm", se = FALSE)+ ggtitle("Free Sulfur Versus Total Sulfur Dioxide") + theme(plot.title = element_text(size = 5))
+
+ggarrange(wrsd, wad, wfsdtsd + rremove("x.text"), ncol = 3, nrow = 1) %>% annotate_figure(top = text_grob("White Wine Scaled"))
+# RED
+
+# scaled red volatile acidity versus citric acid
+rvaca = ggplot(scaled_red, aes(x = volatile.acidity, y = citric.acid)) + geom_point()+scale_x_continuous(name = "Volatile Acidity") + scale_y_continuous(name = "Citric Acid") + geom_smooth(method = "lm", se = FALSE)+ ggtitle("Volatile Acidity Versus Citric Acid") + theme(plot.title = element_text(size = 5))
+
+# scaled red fixed acidity versus citric acid 
+rfaca = ggplot(scaled_red, aes(x = fixed.acidity, y = citric.acid)) + geom_point()+scale_x_continuous(name = "Fixed Acidity") + scale_y_continuous(name = "Citric Acid") + geom_smooth(method = "lm", se = FALSE)+ ggtitle("Fixed Acidity Versus Citric Acid") + theme(plot.title = element_text(size = 5))
+
+# scaled red fixed acidity versus pH
+rfap = ggplot(scaled_red, aes(x = fixed.acidity, y = pH)) + geom_point()+scale_x_continuous(name = "Fixed Acidity") + scale_y_continuous(name = "pH") + geom_smooth(method = "lm", se = FALSE)+ ggtitle("Fixed Acidity Versus pH") + theme(plot.title = element_text(size = 5))
+
+# scaled red fixed acidity versus density
+rfad = ggplot(scaled_red, aes(x = fixed.acidity, y = density)) + geom_point()+scale_x_continuous(name = "Fixed Acidity") + scale_y_continuous(name = "Density") + geom_smooth(method = "lm", se = FALSE)+ ggtitle("Fixed Acidity Versus Density") + theme(plot.title = element_text(size = 5))
+
+# scaled red free sulfur dioxide versus total sulfur dioxide
+fsdtsd = ggplot(scaled_red, aes(x = free.sulfur.dioxide, y = total.sulfur.dioxide)) + geom_point()+scale_x_continuous(name = "Free Sulfur Dioxide") + scale_y_continuous(name = "Total Sulfur Dioxide") + geom_smooth(method = "lm", se = FALSE)+ ggtitle("Free Sulfur Dioxide Versus Total Sulfur Dioxide") + theme(plot.title = element_text(size = 5))
+
+ggarrange(rvaca, rfaca, rfap, rfad, fsdtsd, ncol = 3, nrow = 2) %>% annotate_figure(top = text_grob("Red Wine Scaled"))
+
+```
+
+```{r residual sugar red}
+# we removed outliers to ensure that the variation was not due to the outliers 
+ggplot(red[red$free.sulfur.dioxide < 50,], aes(x = free.sulfur.dioxide, y = quality)) + 
+  geom_boxplot(aes(fill = quality)) +
+  labs(title = "Free Sulfur Dioxide for Red Wine", x = "Free Sulfur Dioxide", y = "Quality") +
+  geom_point(width = 0.15) +
+  scale_fill_brewer(palette = "RdPu")
+
+```
+
+## Model Fitting
+
+```{r creating recipe}
+# creating recipes
+
+white_recipe <- recipe(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = white_train) %>% step_dummy(all_nominal_predictors()) %>% step_normalize(all_predictors()) #%>% step_interact(~density:residual.sugar + density:alcohol) 
+
+red_recipe <- recipe(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = red_train) %>% step_dummy(all_nominal_predictors()) %>% step_normalize(all_predictors())
+#%>% step_interact(~ citric.acid:volatile.acidity + free.sulfur.dioxide:total.sulfur.dioxide)
+
+```
+
+```{r White Log, LDA, QDA, NB k-fold}
+# white 
+
+#lda model using cross validation
+wlda_model <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS") 
+
+wlda_wkflow<- workflow() %>% 
+  add_model(wlda_model) %>% 
+  add_recipe(white_recipe)
+
+wlda_fit_cross <- fit_resamples(wlda_wkflow, white_fold)
+
+collect_metrics(wlda_fit_cross)%>% mutate(model_type = "LDA")
+
+#naive bayes model using cross validation
+wnb_mod <- naive_Bayes() %>% 
+  set_mode("classification") %>% 
+  set_engine("klaR") %>% 
+  set_args(usekernel = FALSE) 
+
+wnb_wkflow <- workflow() %>% 
+  add_model(wnb_mod) %>% 
+  add_recipe(white_recipe)
+
+wnb_fit_cross <- fit_resamples(wnb_wkflow, white_fold)
+
+collect_metrics(wnb_fit_cross) %>% mutate(model_type = "Naive Bayes")
+```
+
+```{r Red Log, LDA, QDA, NB k-fold}
+# red 
+
+#lda model using cross validation
+rlda_model <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS") 
+
+rlda_wkflow<- workflow() %>% 
+  add_model(rlda_model) %>% 
+  add_recipe(red_recipe)
+
+rlda_fit_cross <- fit_resamples(rlda_wkflow, red_fold)
+
+collect_metrics(rlda_fit_cross) %>% mutate(model_type = "LDA")
+
+#naive bayes model using cross validation
+rnb_mod <- naive_Bayes() %>% 
+  set_mode("classification") %>% 
+  set_engine("klaR") %>% 
+  set_args(usekernel = FALSE) 
+
+rnb_wkflow <- workflow() %>% 
+  add_model(rnb_mod) %>% 
+  add_recipe(red_recipe)
+
+rnb_fit_cross <- fit_resamples(rnb_wkflow, red_fold)
+
+collect_metrics(rnb_fit_cross) %>% mutate(model_type = "Naive Bayes")
+```
+
+```{r log reg}
+glm.fit <- glm(quality ~ volatile.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = red_train, family = binomial)
+summary(glm.fit)
+
+# white wine
+wlog_model <- logistic_reg() %>% 
+  set_mode("classification")%>% 
+  set_engine("glm")
+
+wlog_wkflow <- workflow() %>% 
+  add_model(wlog_model) %>% 
+  add_recipe(white_recipe)
+
+wlog_reg_fit <- fit(wlog_wkflow, white_train)
+
+wlog_reg_res <- predict(wlog_reg_fit, new_data = white_test %>%  select(-quality), type = "class" ) 
+
+wlog_reg_res <- bind_cols(wlog_reg_res, white_test %>%  select(quality)) 
+
+wlog_reg_acc <- augment(wlog_reg_fit, new_data = white_test) %>% accuracy(truth = quality, estimate = .pred_class)
+
+print(wlog_reg_res)
+print(wlog_reg_acc)
+
+# red wine
+rlog_model <- logistic_reg() %>% 
+  set_engine("glm") %>% set_mode("classification")
+
+rlog_wkflow <- workflow() %>% 
+  add_model(rlog_model) %>% 
+  add_recipe(red_recipe)
+
+rlog_reg_fit <- fit(rlog_wkflow, red_train)
+
+rlog_reg_res <- predict(rlog_reg_fit, new_data = red_test %>%  select(-quality), type = "class" ) 
+
+rlog_reg_res <- bind_cols(rlog_reg_res, red_test %>%  select(quality)) 
+
+rlog_reg_acc <- augment(rlog_reg_fit, new_data = red_test) %>% accuracy(truth = quality, estimate = .pred_class)
+
+print(rlog_reg_res)
+print(rlog_reg_acc)
+
+#collect_metrics(wlog_reg_fit)
+#collect_metrics(rlog_reg_fit)
+```
+
+```{r LDA}
+
+# white lda model
+wlda_model <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS") 
+
+# setting up workflow
+wlda_wkflow <- workflow() %>% 
+  add_model(wlda_model) %>% 
+  add_recipe(white_recipe)
+
+# fitting the model to training data
+wlda_fit <- fit(wlda_wkflow, white_train)
+
+# now testing the model on the testing data 
+wlda_res <- predict(wlda_fit, new_data = white_test %>%  select(-quality), type = "class" ) 
+
+wlda_res <- bind_cols(wlda_res, white_test %>%  select(quality)) 
+
+# returning the roc auc, roc auc curves, heatmap 
+wlda_pred <- augment(wlda_fit, new_data = white_test) 
+wlda_rocauc <- wlda_pred %>% roc_auc(truth = quality, estimate = .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White LDA Model")
+wlda_roccurve <- wlda_pred %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+wlda_confusionmatrix <- wlda_pred %>% conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+
+print(wlda_res)
+print(wlda_rocauc)
+wlda_roccurve
+wlda_confusionmatrix
+
+# red lda model
+rlda_model <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS") 
+
+rlda_wkflow <- workflow() %>% 
+  add_model(rlda_model) %>% 
+  add_recipe(red_recipe)
+
+rlda_fit <- fit(rlda_wkflow, red_train)
+
+rlda_res <- predict(rlda_fit, new_data = red_test %>%  select(-quality), type = "class" ) 
+
+rlda_res <- bind_cols(rlda_res, red_test %>%  select(quality)) 
+
+# returning the roc auc
+rlda_pred <- augment(rlda_fit, new_data = red_test)
+rlda_rocauc <- rlda_pred %>% roc_auc(truth = quality, estimate = .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8)%>% mutate(model_type = "Red LDA Model")
+rlda_roccurve <- rlda_pred %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+rlda_confusionmatrix <- rlda_pred %>% conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+
+print(rlda_res)
+print(rlda_rocauc)
+rlda_roccurve
+rlda_confusionmatrix
+```
+
+```{r Naive Bayes model}
+# white
+wnb_mod <- naive_Bayes() %>% 
+  set_mode("classification") %>% 
+  set_engine("klaR") %>% 
+  set_args(usekernel = FALSE) 
+
+wnb_wkflow <- workflow() %>% 
+  add_model(wnb_mod) %>% 
+  add_recipe(white_recipe)
+
+wnb_fit_cross <- fit_resamples(wnb_wkflow, white_fold)
+
+collect_metrics(wnb_fit_cross)
+```
+
+```{r decision tree white}
+# decision tree specification
+wtree_spec <- decision_tree() %>%
+  set_engine("rpart", model=TRUE)
+
+# setting mode to classification
+wtree_spec_class <- wtree_spec %>%
+  set_mode("classification")
+
+wclass_tree_fit <- wtree_spec_class %>%
+  fit(quality ~ volatile.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = white_train)
+
+
+wDecisionTreePre <- wclass_tree_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot(main="White Wine Decision Tree")
+
+# augmented on training 
+wDecisionTreeAccPre <- augment(wclass_tree_fit, new_data = white_train) %>%
+  accuracy(truth = quality, estimate = .pred_class)
+
+wDecisionTreeConfMatrixPre <- augment(wclass_tree_fit, new_data = white_train) %>%
+  conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+
+# augmentsed on testing 
+augment(wclass_tree_fit, new_data = white_test) %>%
+  conf_mat(truth = quality, estimate = .pred_class)  %>% autoplot(type = "heatmap")
+
+augment(wclass_tree_fit, new_data = white_test) %>%
+  accuracy(truth = quality, estimate = .pred_class)
+
+# tuning cost complexity 
+wclass_tree_wf<- workflow() %>%
+  add_model(wtree_spec_class %>% 
+              set_args(cost_complexity = tune())) %>% 
+  add_formula(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol)
+
+param_grid <- grid_regular(cost_complexity(range = c(-3,-1)), levels = 10)
+
+tune_res_white <- tune_grid(
+  wclass_tree_wf,
+  resamples = white_fold,
+  grid = param_grid,
+  metric = metric_set(accuracy)
+)
+
+wAutoPlot <- autoplot(tune_res_white)
+
+# extracting the best cost complexitiy parameter
+wbest_rocauc <- collect_metrics(tune_res_white) %>% arrange(desc(mean))
+best_complexity <- select_best(tune_res_white)
+
+wclass_tree_final <- finalize_workflow(wclass_tree_wf, best_complexity)
+
+wclass_tree_final_fit <- fit(wclass_tree_final, data = white_train)
+
+wDecisionTree <- wclass_tree_final_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+
+# augmented on training 
+wDecisionTreeAcc <- augment(wclass_tree_final_fit, new_data = white_train) %>%
+  accuracy(truth = quality, estimate = .pred_class)
+
+wDecisionTreeConfMatrix <- augment(wclass_tree_final_fit, new_data = white_train) %>%
+  conf_mat(truth = quality, estimate = .pred_class)
+
+# augmented on testing 
+wDecisionTreeAccTest <-augment(wclass_tree_final_fit, new_data = white_test) %>%
+  conf_mat(truth = quality, estimate = .pred_class) 
+
+wDecisionTreeConfMatrixTest <-augment(wclass_tree_final_fit, new_data = white_test) %>%
+  accuracy(truth = quality, estimate = .pred_class)
+```
+
+```{r decision tree white LOAD}
+# JUST LOAD IN INFO WITH THIS RATHER THAN RERUNNING 
+load(file = "WhiteWineDecisionTree.rda")
+```
+
+```{r decision tree red}
+# decision tree specification
+rtree_spec <- decision_tree() %>%
+  set_engine("rpart")
+
+# setting mode to classificiation
+rtree_spec_class <- rtree_spec %>%
+  set_mode("classification")
+
+rclass_tree_fit <- rtree_spec_class %>%
+  fit(quality ~ volatile.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = red_train)
+
+
+rclass_tree_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+
+# augmentsed on training 
+augment(rclass_tree_fit, new_data = red_train) %>%
+  accuracy(truth = quality, estimate = .pred_class)
+
+augment(rclass_tree_fit, new_data = red_train) %>%
+  conf_mat(truth = quality, estimate = .pred_class)
+
+# augmentsed on testing 
+augment(rclass_tree_fit, new_data = red_train) %>%
+  conf_mat(truth = quality, estimate = .pred_class) 
+
+augment(rclass_tree_fit, new_data = red_train) %>%
+  accuracy(truth = quality, estimate = .pred_class)
+
+# tuning cost complexity 
+rclass_tree_wf<- workflow() %>%
+  add_model(rtree_spec_class %>% 
+              set_args(cost_complexity = tune())) %>% 
+  add_formula(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol)
+
+param_grid <- grid_regular(cost_complexity(range = c(-3,-1)), levels = 10)
+
+tune_res_red <- tune_grid(
+  rclass_tree_wf,
+  resamples = red_fold,
+  grid = param_grid,
+  metric = metric_set(accuracy)
+)
+
+autoplot(tune_res_red)
+
+# extracting the best cost complexitiy parameter
+
+rbest_rocauc <-collect_metrics(tune_res_red) %>% arrange(desc(mean))
+
+best_complexity <- select_best(tune_res_red)
+
+rclass_tree_final <- finalize_workflow(rclass_tree_wf, best_complexity)
+
+rclass_tree_final_fit <- fit(rclass_tree_final, data = red_train)
+
+rclass_tree_final_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+
+# augmented on training 
+augment(rclass_tree_final_fit, new_data = red_train) %>%
+  accuracy(truth = quality, estimate = .pred_class)
+
+augment(rclass_tree_final_fit, new_data = red_train) %>%
+  conf_mat(truth = quality, estimate = .pred_class)
+
+# augmented on testing 
+augment(rclass_tree_final_fit, new_data = red_test) %>%
+  conf_mat(truth = quality, estimate = .pred_class) 
+
+augment(rclass_tree_final_fit, new_data = red_test) %>%
+  accuracy(truth = quality, estimate = .pred_class)
+```
+
+```{r decision tree red LOAD}
+# JUST LOAD IN INFO WITH THIS RATHER THAN RERUNNING 
+load(file = "RedWineDecisionTree.rda")
+```
+
+```{r random forest white }
+# setting random forest model up
+wrandfor <- rand_forest() %>% set_engine("ranger", importance = "impurity") %>% set_mode("classification")
+
+wrandfor_wf <- workflow() %>%
+  add_model(wrandfor %>%
+              set_args(mtry = tune(), trees = tune(), min_n = tune())) %>% 
+  add_formula(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol)
+
+# tuning the model to find the best arguments 
+param_grid1 <- grid_regular(mtry(range = c(1,9)), trees(range = c(15,17)), min_n(range = c(30,50)), levels = 8)
+
+wtune_res_randfor <- tune_grid(
+  wrandfor_wf,
+  resamples = white_fold,
+  grid = param_grid1,
+  metric = metric_set(accuracy)
+)
+
+wAutoPlotRF <- autoplot(wtune_res_randfor)
+
+
+# collecting metrics to find best mean
+wbest_rocauc1 <-collect_metrics(wtune_res_randfor) %>% arrange(desc(mean))
+
+best_metric <- select_best(wtune_res_randfor)
+
+wrandfor_final <- rand_forest(mtry = 2, trees = 17, min_n = 30) %>% set_engine("ranger", importance = "impurity") %>% set_mode("classification")
+
+wrandfor_fit_final <- fit(wrandfor_final, formula = quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = white_train)
+
+wVIP <- vip(wrandfor_fit_final)
+```
+
+```{r random forest white LOAD}
+# JUST LOAD IN INFO WITH THIS RATHER THAN RERUNNING 
+load(file = "WhiteWineRandomForest.rda")
+```
+
+```{r random forest red}
+# setting random forest model up
+rrandfor <- rand_forest() %>% set_engine("ranger", importance = "impurity") %>% set_mode("classification")
+
+rrandfor_wf <- workflow() %>%
+  add_model(rrandfor %>%
+              set_args(mtry = tune(), trees = tune(), min_n = tune())) %>% 
+  add_formula(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol)
+
+# tuning the model to find the best arguments 
+param_grid2 <- grid_regular(mtry(range = c(1,9)), trees(range = c(15,17)), min_n(range = c(30,50)), levels = 8)
+
+rtune_res_randfor <- tune_grid(
+  rrandfor_wf,
+  resamples = red_fold,
+  grid = param_grid2
+)
+
+rAutoPlotRF <- autoplot(rtune_res_randfor)
+
+# collecting metrics to find best mean
+rbest_rocauc1 <- collect_metrics(rtune_res_randfor) %>% arrange(desc(mean))
+print(rbest_rocauc1)
+best_metric <- select_best(rtune_res_randfor)
+
+rrandfor_final <- rand_forest(mtry = 7, trees = 17, min_n = 32) %>% set_engine("ranger", importance = "impurity") %>% set_mode("classification")
+rrandfor_fit_final <- fit(rrandfor_final, formula = quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol,data = red_train)
+
+rVIP <- vip(rrandfor_fit_final)
+```
+
+```{r random forest red LOAD}
+# JUST LOAD IN INFO WITH THIS RATHER THAN RERUNNING 
+load(file = "RedWineRandomForest.rda")
+```
+
+```{r boosted tree white}
+wboost_spec <-  boost_tree(tree_depth = 5) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+
+wboost_wf <- workflow() %>%
+  add_model(wboost_spec %>%
+              set_args(trees = tune())) %>% 
+  add_formula(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol)
+
+param_grid3 <- grid_regular(trees(range = c(10,2000)), levels = 10)
+
+wtune_res_boosted <- tune_grid(
+  wboost_wf,
+  resamples = white_fold,
+  grid = param_grid3
+)
+autoplot(wtune_res_boosted)
+wbest_rocauc2 <- collect_metrics(wtune_res_boosted) %>% arrange(desc(mean))
+print(best_rocauc2)
+```
+
+```{r boosted tree white LOAD}
+# JUST LOAD IN INFO WITH THIS RATHER THAN RERUNNING 
+load(file = "WhiteWineBoostedTrees.rda")
+```
+
+```{r boosted tree red}
+rboost_spec <-  boost_tree(tree_depth = 5) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+
+rboost_wf <- workflow() %>%
+  add_model(rboost_spec %>%
+              set_args(trees = tune())) %>% 
+  add_formula(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol)
+
+param_grid4 <- grid_regular(trees(range = c(10,2000)), levels = 10)
+
+rtune_res_boosted <- tune_grid(
+  rboost_wf,
+  resamples = red_fold,
+  grid = param_grid4
+)
+autoplot(rtune_res_boosted)
+
+wbest_rocauc2 <- collect_metrics(rtune_res_boosted) %>% arrange(desc(mean))
+print(wbest_rocauc2)
+```
+
+```{r random forest red LOAD}
+# JUST LOAD IN INFO WITH THIS RATHER THAN RERUNNING 
+load(file = "RedWineBoostedTrees.rda")
+```
+
+```{r best roc}
+# augment all the rocs from decision, randforest, boosted --> see which one has the best --> fit best on testing 
+# WHITE
+wbest_rocauc
+wbest_rocauc1
+wbest_rocauc2
+wbest_roc_table <- rbind(wbest_rocauc[1,c(2,4)], wbest_rocauc1[1,c(4,6)], wbest_rocauc2[1,c(2,4)] ) %>% mutate(model_type = c("Decision Tree", "Random Forest", "Boosted Trees"))
+wbest_roc_table
+
+# We will test our model using Boosted Trees and Random Forest 
+
+#RED
+rbest_rocauc
+rbest_rocauc1
+rbest_rocauc2
+rbest_roc_table <- rbind(rbest_rocauc[1,c(2,4)], rbest_rocauc1[1,c(4,6)], rbest_rocauc2[1,c(2,4)] ) %>% mutate(model_type = c("Decision Tree", "Random Forest", "Boosted Trees"))
+rbest_roc_table
+
+# We will test our model using Boosted Trees and Random Forest 
+
+```
+
+```{r pca with lda white}
+white_recipe_pca <- recipe(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = white_train) %>% step_dummy(all_nominal_predictors()) %>% step_normalize(all_predictors()) %>% step_pca(all_numeric_predictors(), num_comp = tune())
+
+# column name(s) must match tune() above
+tuneGrid <- expand.grid(num_comp = 1:ncol(white_recipe_pca$template))
+
+# control tune_grid() process below
+trControl <- control_grid(verbose = TRUE, allow_par = FALSE)
+
+wlda_pca_wkflow <- workflow() %>% 
+  add_model(wlda_model) %>% 
+  add_recipe(white_recipe_pca)
+
+pca_lda_fit <- wlda_pca_wkflow %>%
+  tune_grid(resamples = white_fold,
+            grid = tuneGrid,
+            metrics = metric_set(accuracy),
+            control = trControl)
+
+pca_lda_metrics <- pca_lda_fit %>% collect_metrics()
+
+ggplot(pca_lda_metrics, aes(x = num_comp, y = mean)) +
+  geom_line(color = "#3E4A89FF", linewidth = 2, alpha = 0.6) +
+  scale_x_continuous(breaks = 1:ncol(white_recipe_pca$template)) +
+  facet_wrap(~.metric) +
+  theme_bw()
+
+pca_lda_fit %>% show_best(metric = "accuracy")
+
+(bestTune <- pca_lda_fit %>% select_by_one_std_err(num_comp, metric = "accuracy"))
+
+wlda_pca_wkflow_final <- wlda_pca_wkflow %>% finalize_workflow(bestTune)
+
+fit_final <- wlda_pca_wkflow_final %>% fit(white_train)
+
+white.PCALDA <- tibble(white_train,
+       predict(fit_final, new_data = white_train, type = "class"), # predicted class
+       predict(fit_final, new_data = white_train, type = "prob"), # posterior prob. for classes
+       as_tibble(predict(fit_final, new_data = white_train, type = "raw")$x)) # LD scores
+white.PCALDA
+
+# plot
+ggplot(white.PCALDA, aes(x = LD1, y = LD2)) +
+  geom_point(aes(color = quality, shape = .pred_class)) + 
+  theme_bw() +
+  ggtitle("PCA-LDA (DAPC) on White Wine Training dataset, using 9 PC")
+
+#augmented on training 
+pcalda_fit <- augment(fit_final, new_data = white_train) 
+pcalda_acc <- pcalda_fit %>% accuracy(truth = quality, estimate = .pred_class)
+pcalda_rocauc <- pcalda_fit %>% roc_auc(truth = quality, estimate = .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White Wine LDA Model using PCA ")
+pcalda_roccurve <- pcalda_fit %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+pcalda_confusionmatrix <- pcalda_fit %>%
+  conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+
+pcalda_acc
+pcalda_rocauc
+pcalda_roccurve
+pcalda_confusionmatrix
+
+#augmented on testing
+pcalda_fit_test <- augment(fit_final, new_data = white_test) 
+pcalda_test_acc <- pcalda_fit_test %>% accuracy(truth = quality, estimate = .pred_class)
+pcalda_test_rocauc <- pcalda_fit_test %>% roc_auc(truth = quality, estimate = .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White Wine LDA Model using PCA")
+pcalda_test_roccurve <- pcalda_fit_test %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+pcalda_test_confusionmatrix <- pcalda_fit_test %>%
+  conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+
+pcalda_test_acc
+pcalda_test_rocauc
+pcalda_test_roccurve
+pcalda_test_confusionmatrix
+
+save(white_recipe_pca,tuneGrid, trControl, wlda_pca_wkflow, pca_lda_fit, pca_lda_metrics, pca_lda_fit, white.PCALDA, pcalda_fit, pcalda_acc, pcalda_rocauc, pcalda_roccurve, pcalda_confusionmatrix, pcalda_test_acc, pcalda_test_rocauc, pcalda_test_roccurve, pcalda_test_confusionmatrix, file = "WhiteLDAPCA.rda")
+```
+
+```{r pca with lda red}
+red_recipe_pca <- recipe(quality ~ volatile.acidity + fixed.acidity + citric.acid + residual.sugar + chlorides + free.sulfur.dioxide + total.sulfur.dioxide + density + pH + sulphates + alcohol, data = red_train) %>% step_dummy(all_nominal_predictors()) %>% step_normalize(all_predictors()) %>% step_pca(all_numeric_predictors(), num_comp = tune())
+
+# column name(s) must match tune() above
+rtuneGrid <- expand.grid(num_comp = 1:ncol(red_recipe_pca$template))
+
+# control tune_grid() process below
+rtrControl <- control_grid(verbose = TRUE, allow_par = FALSE)
+
+rlda_pca_wkflow <- workflow() %>% 
+  add_model(rlda_model) %>% 
+  add_recipe(red_recipe_pca)
+
+rpca_lda_fit <- rlda_pca_wkflow %>%
+  tune_grid(resamples = red_fold,
+            grid = tuneGrid,
+            metrics = metric_set(accuracy),
+            control = trControl)
+
+rpca_lda_metrics <- rpca_lda_fit %>% collect_metrics()
+
+ggplot(rpca_lda_metrics, aes(x = num_comp, y = mean)) +
+  geom_line(color = "#3E4A89FF", linewidth = 2, alpha = 0.6) +
+  scale_x_continuous(breaks = 1:ncol(red_recipe_pca$template)) +
+  facet_wrap(~.metric) +
+  theme_bw()
+
+rpca_lda_fit %>% show_best(metric = "accuracy")
+
+(bestTune <- rpca_lda_fit %>% select_by_one_std_err(num_comp, metric = "accuracy"))
+
+rlda_pca_wkflow_final <- rlda_pca_wkflow %>% finalize_workflow(bestTune)
+
+rfit_final <- rlda_pca_wkflow_final %>% fit(red_train)
+
+red.PCALDA <- tibble(red_train,
+       predict(rfit_final, new_data =red_train, type = "class"), # predicted class
+       predict(rfit_final, new_data = red_train, type = "prob"), # posterior prob. for classes
+       as_tibble(predict(rfit_final, new_data = red_train, type = "raw")$x)) # LD scores
+
+# plot
+ggplot(red.PCALDA, aes(x = LD1, y = LD2)) +
+  geom_point(aes(color = quality, shape = .pred_class)) + 
+  theme_bw() +
+  ggtitle("PCA-LDA (DAPC) on Red Wine Training dataset, using 9 PC")
+
+#augmented on training 
+rpcalda_fit <- augment(rfit_final, new_data = red_train) 
+rpcalda_acc <- rpcalda_fit %>% accuracy(truth = quality, estimate = .pred_class)
+rpcalda_rocauc <- rpcalda_fit %>% roc_auc(truth = quality, estimate = .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "White Wine LDA Model using PCA ")
+rpcalda_roccurve <- rpcalda_fit %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+rpcalda_confusionmatrix <- rpcalda_fit %>%
+  conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+
+rpcalda_acc
+rpcalda_rocauc
+rpcalda_roccurve
+rpcalda_confusionmatrix
+
+#augmented on testing
+rpcalda_fit_test <- augment(rfit_final, new_data = red_test) 
+rpcalda_test_acc <- rpcalda_fit_test %>% accuracy(truth = quality, estimate = .pred_class)
+rpcalda_test_rocauc <- rpcalda_fit_test %>% roc_auc(truth = quality, estimate = .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% mutate(model_type = "Red Wine LDA Model using PCA")
+rpcalda_test_roccurve <- rpcalda_fit_test %>% roc_curve(quality, .pred_3,.pred_4, .pred_5 , .pred_6 , .pred_7, .pred_8) %>% autoplot()
+rpcalda_test_confusionmatrix <- rpcalda_fit_test %>%
+  conf_mat(truth = quality, estimate = .pred_class) %>% autoplot(type = "heatmap")
+
+rpcalda_test_acc
+rpcalda_test_rocauc
+rpcalda_test_roccurve
+rpcalda_test_confusionmatrix
+
+save(red_recipe_pca, rtuneGrid, rtrControl, rlda_pca_wkflow, rpca_lda_fit, rpca_lda_metrics, rpca_lda_fit, red.PCALDA, rpcalda_fit, rpcalda_acc, rpcalda_rocauc, rpcalda_roccurve, rpcalda_confusionmatrix, rpcalda_test_acc, rpcalda_test_rocauc, rpcalda_test_roccurve, rpcalda_test_confusionmatrix, file = "RedLDAPCA.rda")
+```
